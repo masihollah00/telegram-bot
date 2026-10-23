@@ -1,8 +1,8 @@
 
-
 # -*- coding: utf-8 -*-
 """MASIH GUARD S1000+ — single-file Telegram group management bot."""
-import os, re, json, time, random, threading, io, urllib.request, urllib.error, html, socket
+import os, re, json, time, random, threading, io, urllib.request, urllib.error, html, socket, shutil
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, date
 import telebot
@@ -26,22 +26,28 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=4)
 LOCK = threading.RLock()
+GROUP_ADMIN_CACHE = {}  # (chat_id, user_id) -> (monotonic expiry, bool)
+FORCE_JOIN_CACHE = {}  # (chat_id, user_id) -> (monotonic expiry, missing channel rows)
+ENTRY_GATE_NOTICE_CACHE = {}  # (chat_id, user_id) -> monotonic expiry
+GROUP_ADMIN_CACHE_TTL = 15
 WAITING, GAMES, PANEL_CURRENT, PANEL_HISTORY = {}, {}, {}, {}
 GAME_CYCLES = {}
 BOT_USERNAME = ""
 BOT_ID = 0
+STARTED_AT = time.time()
 
 DEFAULT_GROUP = {
-    "anti_link": True, "anti_ads": True, "anti_spam": True, "anti_repeat": True,
+    "anti_link": True, "anti_ads": True, "anti_spam": True, "anti_repeat": True, "anti_raid_on": False, "raid_mode_until": 0,
     "anti_forward": False, "media_lock": False, "lock_mentions": False, "lock_hashtags": False, "lock_usernames": False, "welcome_on": True,
     "farewell_on": False, "join_approval": False, "bad_words": [], "whitelist": [],
+    "force_join_on": False, "force_join_channels": [], "force_add_on": False, "force_add_count": 3, "force_add_credits": {}, "invite_links": [],
     "warn_limit": 3, "lock_photos": False, "lock_videos": False, "lock_files": False,
     "lock_stickers": False, "lock_voice": False, "lock_video_notes": False,
     "rules": "احترام به اعضا الزامی است.",
     "welcome_text": "سلام {name}، به گروه خوش آمدی!", "farewell_text": "خداحافظ {name}",
     "auto_replies": {}, "custom_commands": {}, "phone_filter": False,
     "smart_security": True, "quiet_hours_on": False, "quiet_start": "23:00", "quiet_end": "07:00",
-    "welcome_image": "", "welcome_delete_seconds": 0
+    "welcome_image": "", "welcome_delete_seconds": 0, "captcha_on": False, "notes": {}
 }
 DEFAULT_DATA = {
     "groups": {}, "warnings": {}, "logs": [], "proxies": [], "customers": {}, "moderation_lists": {}, "message_history": {},
@@ -54,7 +60,7 @@ DEFAULT_DATA = {
         "referral_reward_toman": 5000,
         "subscription_packages": [[30, 40000], [60, 80000], [90, 120000]]
     },
-    "users": {}, "referrals": {}, "subscriptions": {}, "transactions": {},
+    "users": {}, "referrals": {}, "subscriptions": {}, "transactions": {}, "captchas": {}, "join_times": {}, "force_add_credits": {}, "force_invite_links": {},
     "subscription_requests": {}, "payout_requests": {},
     "last_daily": {}, "group_licenses": {}, "join_requests": {}, "group_requests": {},
     "group_stats": {}, "active_members": {}, "manager_roles": {}, "bot_admins": {}
@@ -66,11 +72,26 @@ def now_text(): return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 def today(): return date.today().isoformat()
 
 def load_data():
+    """Load persistent data; preserve a damaged file for manual recovery instead of overwriting it."""
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict): raise ValueError("Invalid data")
-    except (OSError, ValueError, TypeError):
+        if not isinstance(data, dict):
+            raise ValueError("The root of the data file must be a JSON object")
+    except FileNotFoundError:
+        data = clone(DEFAULT_DATA)
+    except (OSError, ValueError, TypeError) as load_error:
+        # Never silently discard a broken JSON file: preserve a timestamped copy first.
+        try:
+            if os.path.isfile(DATA_FILE) and os.path.getsize(DATA_FILE) <= 25 * 1024 * 1024:
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                corrupt_copy = f"{DATA_FILE}.corrupt-{stamp}.bak"
+                shutil.copy2(DATA_FILE, corrupt_copy)
+                print(f"WARNING: invalid data file preserved as {corrupt_copy}: {load_error!r}")
+            else:
+                print(f"WARNING: could not preserve invalid data file: {load_error!r}")
+        except Exception as backup_error:
+            print("WARNING: failed to preserve invalid data file:", repr(backup_error))
         data = clone(DEFAULT_DATA)
     for k, v in DEFAULT_DATA.items():
         if k not in data: data[k] = clone(v)
@@ -110,13 +131,24 @@ def load_data():
 DATA = load_data()
 
 def save_data():
+    """Atomically persist bot state so interrupted writes do not truncate the main JSON file."""
     with LOCK:
+        parent = os.path.dirname(os.path.abspath(DATA_FILE))
+        os.makedirs(parent, exist_ok=True)
         tmp = DATA_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(DATA, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, DATA_FILE)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(DATA, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, DATA_FILE)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
 def add_log(action, chat_id="", user_id="", detail=""):
     with LOCK:
@@ -198,39 +230,78 @@ def group_install_message(chat_id, title="این گروه"):
             "📩 برای بررسی و فعال‌سازی، با پشتیبان ربات ارتباط بگیرید.")
 
 def bot_settings():
-    """Return current Toman settings; legacy diamond settings are removed."""
+    """Return normalized Toman settings without overwriting valid owner configuration."""
     settings = DATA.setdefault("bot_settings", clone(DEFAULT_DATA["bot_settings"]))
-    settings.pop("daily_reward", None); settings.pop("luck_max", None)
-    settings.pop("referral_reward", None); settings.pop("shop_packages", None)
+    # Remove retired economy keys, but preserve valid current Toman settings.
+    for retired_key in ("daily_reward", "luck_max", "referral_reward", "shop_packages"):
+        settings.pop(retired_key, None)
+    for key, value in DEFAULT_DATA["bot_settings"].items():
+        settings.setdefault(key, clone(value))
     settings.setdefault("referral_reward_toman", 5000)
-    settings["subscription_packages"] = [[30, 40000], [60, 80000], [90, 120000]]
-    for key, value in DEFAULT_DATA["bot_settings"].items(): settings.setdefault(key, clone(value))
+    # Validate packages defensively. The previous implementation reset this list on
+    # every call, silently discarding any customized packages from persistent data.
+    packages = settings.get("subscription_packages")
+    normalized_packages = []
+    if isinstance(packages, list):
+        for row in packages[:20]:
+            if not isinstance(row, (list, tuple)) or len(row) != 2:
+                continue
+            try:
+                days, price = int(row[0]), int(row[1])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if 1 <= days <= 3650 and 0 <= price <= 2_000_000_000:
+                pair = [days, price]
+                if pair not in normalized_packages:
+                    normalized_packages.append(pair)
+    if not normalized_packages:
+        normalized_packages = clone(DEFAULT_DATA["bot_settings"]["subscription_packages"])
+    settings["subscription_packages"] = normalized_packages
+    try:
+        reward = int(settings.get("referral_reward_toman", 5000))
+    except (TypeError, ValueError, OverflowError):
+        reward = 5000
+    settings["referral_reward_toman"] = min(100_000_000, max(0, reward))
     return settings
 
 def start_welcome_text(user):
-    """Persian /start greeting with a clickable Telegram user mention."""
+    """Customer-facing Persian welcome and feature catalogue for /start."""
     raw_name = " ".join(x for x in [getattr(user, "first_name", ""), getattr(user, "last_name", "")] if x).strip() or "دوست عزیز"
     mention = f'<a href="tg://user?id={int(user.id)}">{esc(raw_name)}</a>'
-    default_text = (
-        f"🛡️ سلام {mention} 🌹\n\n"
-        "به <b>MASIH GUARD S1000+</b> خوش اومدی.\n"
-        "ربات برای مدیریت و ایمن‌سازی گروه‌های تلگرام طراحی شده است.\n\n"
-        "🔐 امکانات موجود شامل کنترل لینک و تبلیغات، ضداسپم، مدیریت اعضا، "
-        "قوانین، خوشامدگویی، گزارش‌ها و ابزارهای کمکی است؛ عملکرد هر قابلیت "
-        "به مجوزهای ربات و تنظیمات گروه بستگی دارد.\n\n"
-        "🧠 دستیار هوش مصنوعی از بخش مربوطه در دسترس است؛ برای پاسخ‌گویی باید "
-        "کلید سرویس هوش مصنوعی روی هاست تنظیم شده باشد.\n\n"
-        "👇 از دکمه‌های زیر برای شروع استفاده کن.\n"
-        "📌 تنظیمات مدیریتی فقط برای مالک مجاز است."
-    )
     custom = str(bot_settings().get("public_features", "") or "").strip()
     if custom:
         marker = "__MASIH_CLICKABLE_USER_MENTION__"
         safe_custom = esc(custom.replace("{name}", marker)).replace(marker, mention)
-        return safe_custom
-    return default_text
-
-
+        return safe_custom + "\n\n" + PUBLIC_FEATURES + "\n\n📚 برای فهرست فرمان‌ها /help را بزن."
+    return (
+        f"🌌 <b>سلام {mention}؛ به دنیای امنیت هوشمند خوش اومدی!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🛡️ <b>MASIH GUARD S1000+</b>\n"
+        "<i>دستیار مدیریت، امنیت و ابزارهای کاربردی تلگرام</i>\n\n"
+        "🚀 <b>امکانات اصلی</b>\n"
+        "🔐 <b>امنیت گروه:</b> کنترل لینک و تبلیغات، ضداسپم و تکرار، کنترل فوروارد و رسانه، فیلتر شماره تماس، کلمات ممنوع، کپچا و ابزارهای امنیت هوشمند.\n"
+        "👥 <b>مدیریت اعضا:</b> اخطار، سکوت و رفع سکوت، مسدودسازی و آزادسازی، اخراج، گزارش تخلف، سنجاق و پاک‌سازی پیام‌ها با فرمان مجاز.\n"
+        "👋 <b>مدیریت ورود و خروج:</b> خوشامدگویی، خداحافظی، تنظیم متن و تصویر خوشامد، تأیید ورود و کنترل ضدیورش.\\n"
+        "📢 <b>الزام ورود:</b> جوین اجباری کانال‌های تنظیم‌شده و الزام دعوت اعضا با لینک اختصاصی، در صورت فعال‌سازی مدیر گروه.\\n"
+        "⚙️ <b>ابزارهای گروه:</b> قوانین، پاسخ خودکار، فرمان اختصاصی، یادداشت‌ها، اطلاعیه، آمار و گزارش فعالیت.\n"
+        "🧠 <b>دستیار هوشمند:</b> راهنمایی دربارهٔ امکانات و درخواست‌های پشتیبانی‌شده؛ اجرای تغییرات گروه فقط پس از بررسی دسترسی مدیر انجام می‌شود.\n"
+        "🎨 <b>ابزارهای جانبی:</b> تبدیل متن به سبک‌های فونت، فهرست پروکسی‌های ذخیره‌شده، تیکت پشتیبانی و بازی‌های سرگرمی.\n"
+        "🎮 <b>سرگرمی:</b> بازی متنی، بازی‌های مرورگری و جدول امتیازها.\n"
+        "💳 <b>حساب کاربری:</b> کیف پول تومانی، تاریخچهٔ تراکنش، دعوت دوستان، درخواست برداشت و بسته‌های اشتراک.\n\n"
+        "📚 <b>شروع سریع</b>\n"
+        "• <code>/help</code> — فهرست فرمان‌ها\n"
+        "• <code>/profile</code> — پروفایل و موجودی\n"
+        "• <code>/top</code> — جدول امتیازها\n"
+        "• <code>/game</code> یا «بازی» — بازی‌ها\n"
+        "• <code>/ai متن سؤال</code> — پرسش از دستیار\n"
+        "• <code>/ping</code> — بررسی پاسخ‌گویی ربات\n"
+        "• <code>/id</code> — شناسهٔ کاربر و گفتگو\n"
+        "• در گروه، «پنل» یا «راهنما» — پنل و راهنمای همان گروه\n\n"
+        "👥 <b>دعوت دوستان:</b> از بخش «زیرمجموعه‌گیری» لینک اختصاصی بگیر؛ پاداش فقط طبق شرایط و تنظیمات فعلی ربات ثبت می‌شود.\n\n"
+        "🔒 <b>شفاف و امن:</b> امکانات گروه به مجوز نصب، دسترسی ادمین ربات و مجوزهای تلگرام وابسته‌اند. تغییرات مدیریتی فقط برای مدیران مجاز همان گروه در دسترس است. قابلیت‌های وابسته به سرویس بیرونی، مانند هوش مصنوعی یا بازی وب، تنها در صورت تنظیم بودن سرویس فعال می‌شوند.\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👇 از منوی شیک زیر، بخش موردنظرت رو انتخاب کن."
+    )
 
 
 def group_start_guide(chat_title="گروه"):
@@ -240,7 +311,8 @@ def group_start_guide(chat_title="گروه"):
         "👋 سلام! برای مدیریت گروه، ربات باید مدیر گروه باشد و مجوزهای لازم را داشته باشد.\n\n"
         "🔐 تنظیمات پنل و مدیریت مالک در گفت‌وگوی خصوصی ربات انجام می‌شود؛ پیام‌های پنل در گروه منتشر نمی‌شوند.\n"
         "🧰 مدیران گروه می‌توانند از فرمان‌های فارسی پشتیبانی‌شده استفاده کنند؛ برای اقدام روی یک عضو، روی پیام همان عضو ریپلای کنید.\n"
-        "📜 برای دیدن قوانین بنویسید «قوانین»، برای آمار «آمار»، و برای راهنمای فرمان‌ها «راهنما».\n"
+        "📜 برای دیدن قوانین بنویسید «قوانین»، برای آمار «آمار»، و برای راهنمای فرمان‌ها «راهنما».\\n"
+        "📢 اگر جوین اجباری روشن باشد، باید عضو کانال‌های نمایش‌داده‌شده باشید. برای لینک دعوت اختصاصی، در گروه /mylink را بزنید (در صورت فعال بودن اد اجباری).\\n"
         "⚠️ بعضی امکانات فقط با مجوز فعال گروه و دسترسی ادمین ربات کار می‌کنند."
     )
 
@@ -253,10 +325,70 @@ def configured_url(key, fallback):
     value = str(bot_settings().get(key, "") or fallback).strip()
     return value if value.startswith(("https://", "http://")) else fallback
 
+
+def get_game_url():
+    """Resolve the browser-game URL across common hosts; return empty unless HTTPS is configured."""
+    explicit = (os.getenv("WEB_GAME_URL") or "").strip().rstrip("/")
+    if explicit:
+        candidate = explicit if explicit.lower().endswith("/game") else explicit + "/game"
+        return candidate if candidate.startswith("https://") else ""
+    base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVICE_URL") or
+            os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+    if not base:
+        # Some hosts expose a bare public domain rather than a fully-qualified URL.
+        bare_domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("KOYEB_PUBLIC_DOMAIN") or "").strip().strip("/")
+        if bare_domain:
+            base = bare_domain if "://" in bare_domain else "https://" + bare_domain
+    if base.startswith("https://"):
+        return base + "/game"
+    return ""
+
+def group_admin_status(chat_id, user_id):
+    """Return True/False for a confirmed role, or None if Telegram lookup failed.
+
+    A short cache avoids one Telegram API request for every group message. The
+    unknown state is kept separate so security filters do not punish an admin
+    merely because Telegram is temporarily unreachable.
+    """
+    if not user_id:
+        return False
+    key = (int(chat_id), int(user_id))
+    now = time.monotonic()
+    cached = GROUP_ADMIN_CACHE.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        member = bot.get_chat_member(key[0], key[1])
+        result = getattr(member, "status", "") in ("administrator", "creator")
+        GROUP_ADMIN_CACHE[key] = (now + GROUP_ADMIN_CACHE_TTL, result)
+        if len(GROUP_ADMIN_CACHE) > 10000:
+            for cache_key, (expiry, _) in list(GROUP_ADMIN_CACHE.items()):
+                if expiry <= now:
+                    GROUP_ADMIN_CACHE.pop(cache_key, None)
+            if len(GROUP_ADMIN_CACHE) > 12000:
+                GROUP_ADMIN_CACHE.clear()
+        return result
+    except Exception:
+        # Do not cache failures: permissions may become available on the next check.
+        return None
+
 def is_group_admin(chat_id, user_id):
-    if is_owner(user_id): return True
-    try: return bot.get_chat_member(chat_id, user_id).status in ("administrator", "creator")
-    except Exception: return False
+    """Require confirmed Telegram admin/creator status in this exact group."""
+    return group_admin_status(chat_id, user_id) is True
+
+def bot_has_group_permission(chat_id, permission):
+    """Check the bot's current Telegram permission before enabling dependent features."""
+    try:
+        me = bot.get_me()
+        member = bot.get_chat_member(chat_id, me.id)
+        status = getattr(member, "status", "")
+        if status == "creator":
+            return True
+        if status != "administrator":
+            return False
+        return bool(getattr(member, permission, False))
+    except Exception:
+        return False
 
 # ---------------- Menus ----------------
 SECTIONS = {
@@ -271,23 +403,19 @@ SECTIONS = {
 }
 
 PUBLIC_FEATURES = (
-    "🌈 <b>MASIH GUARD S1000+</b>\n"
+    "🌌 <b>MASIH GUARD S1000+</b>\n"
+    "<i>امنیت گروه، مدیریت هوشمند و ابزارهای کاربردی تلگرام</i>\n"
     "━━━━━━━━━━━━━━━━━━━━\n"
-    "🛡 <b>امنیت گروه</b>\n"
-    "├ ضد لینک و تبلیغات\n├ ضد اسپم و پیام تکراری\n├ کنترل فوروارد و رسانه\n"
-    "├ کلمات ممنوع و اخطار خودکار\n\n"
-    "👥 <b>مدیریت اعضا</b>\n"
-    "├ اخطار، سکوت، رفع سکوت\n├ مسدودسازی، آزادسازی و اخراج\n"
-    "├ خوشامد و خداحافظی سایبری\n├ تأیید درخواست عضویت\n├ سنجاق پیام و پاک‌سازی پیام‌ها با فرمان مدیر\n\n"
-    "⚙️ <b>ابزارهای کاربردی</b>\n"
-    "├ قوانین و پاسخ خودکار\n├ تبدیل رایگان متن به ۱۰۰ سبک فونت در گفت‌وگوی خصوصی\n"
-    "├ دریافت پروکسی‌های ذخیره‌شده\n├ هوش مصنوعی و تیکت پشتیبانی\n"
-    "├ بازی، امتیاز و گزارش فعالیت\n\n"
-    "💳 <b>کیف پول تومانی و اشتراک</b>\n"
-    "├ پاداش ۵٬۰۰۰ تومانی برای دعوت معتبر\n├ تاریخچهٔ تراکنش‌های تومانی\n"
-    "├ اشتراک‌های ۳۰، ۶۰ و ۹۰ روزه\n├ فعال‌سازی پس از تأیید مالک\n\n"
+    "🛡️ <b>امنیت:</b> ضدلینک، ضدتبلیغ، ضداسپم، ضدتکرار، کنترل فوروارد و رسانه، فیلتر شماره، کپچا و ضدیورش.\n"
+    "👥 <b>مدیریت اعضا:</b> اخطار، سکوت/رفع سکوت، بن/رفع بن، اخراج، گزارش، سنجاق و پاک‌سازی پیام‌ها.\n"
+    "👋 <b>ورود و خروج:</b> خوشامد و خداحافظی، متن و تصویر خوشامد، تأیید ورود و قوانین گروه.\n"
+    "⚙️ <b>ابزار مدیریت:</b> پاسخ خودکار، فرمان اختصاصی، یادداشت، اطلاعیه، آمار و گزارش فعالیت.\n"
+    "🧠 <b>دستیار هوشمند:</b> راهنمای امکانات و کمک به فرمان‌های پشتیبانی‌شده؛ اجرای مدیریت با بررسی دسترسی.\n"
+    "🎨 <b>ابزارهای جانبی:</b> فونت‌های متنی، پروکسی‌های ذخیره‌شده، تیکت پشتیبانی و بازی‌ها.\n"
+    "💳 <b>حساب کاربری:</b> کیف پول تومانی، تراکنش‌ها، دعوت دوستان، درخواست برداشت و بسته‌های اشتراک.\n"
     "━━━━━━━━━━━━━━━━━━━━\n"
-    "👇 از دکمه‌های زیر برای شروع استفاده کن."
+    "📌 <b>نکته:</b> فعال بودن هر قابلیت به تنظیمات، مجوز نصب و دسترسی‌های تلگرام بستگی دارد. پاداش دعوت و اشتراک طبق تنظیمات فعلی و پس از بررسی مربوطه ثبت می‌شوند.\n"
+    "👇 برای ادامه، یکی از گزینه‌های منو را انتخاب کن."
 )
 
 def public_keyboard():
@@ -328,10 +456,10 @@ def section_keyboard(section):
     kb = types.InlineKeyboardMarkup(row_width=1)
     choices = {
       "security":[("🔗 ضد لینک","toggle:anti_link"),("📢 ضد تبلیغ","toggle:anti_ads"),("🚫 ضد اسپم","toggle:anti_spam"),("🔁 ضد پیام تکراری","toggle:anti_repeat"),("↪️ ضد فوروارد","toggle:anti_forward"),("🖼 قفل رسانه","toggle:media_lock"),("🔗 قفل لینک و نام کاربری","toggle:anti_link"),("📵 فیلتر شماره تماس","toggle:phone_filter"),("🖼 قفل عکس","toggle:lock_photos"),("🎞 قفل فیلم","toggle:lock_videos"),("📁 قفل فایل","toggle:lock_files"),("🎭 قفل استیکر و گیف","toggle:lock_stickers"),("🎙 قفل پیام صوتی","toggle:lock_voice"),("⭕ قفل ویدئوی گرد","toggle:lock_video_notes"),("📂 فهرست کاربران مجاز","show:whitelist"),("➕ افزودن کاربر مجاز","ask:add_whitelist"),("➖ حذف کاربر مجاز","ask:remove_whitelist"),
-      ("🧠 امنیت هوشمند این گروه","toggle:group_smart_security"),("🌙 ساعت سکوت شبانه","ask:quiet_hours"),("🆔 شناسه و تنظیمات گروه","ask:group_settings")],
-      "welcome":[("👋 خوشامدگویی","toggle:welcome_on"),("👋 پیام خداحافظی","toggle:farewell_on"),("🛂 تأیید خودکار ورود","toggle:join_approval"),("✏️ تنظیم متن خوشامد","ask:welcome_text"),("✏️ تنظیم متن خداحافظی","ask:farewell_text"),
-      ("🖼 تنظیم تصویر خوشامد","ask:welcome_image"),("🗑 زمان حذف خوشامد","ask:welcome_delete_seconds")],
-      "rules":[("📜 مشاهده قوانین","show:rules"),("✏️ تنظیم قوانین","ask:rules"),("💬 افزودن پاسخ خودکار","ask:auto_reply"),("🗑 حذف پاسخ خودکار","ask:delete_reply"),("🚫 افزودن کلمه ممنوع","ask:bad_word"),("🧩 افزودن فرمان اختصاصی","ask:add_custom_command"),("🗑 حذف فرمان اختصاصی","ask:delete_custom_command"),("📣 ارسال اطلاعیه","ask:announcement")],
+      ("🧠 امنیت هوشمند این گروه","toggle:group_smart_security"),("🚨 ضد یورش ورود","toggle:anti_raid_on"),("🌙 ساعت سکوت شبانه","ask:quiet_hours"),("🆔 شناسه و تنظیمات گروه","ask:group_settings")],
+      "welcome":[("👋 خوشامدگویی","toggle:welcome_on"),("👋 پیام خداحافظی","toggle:farewell_on"),("🛂 تأیید خودکار ورود","toggle:join_approval"),("📢 تنظیم جوین اجباری","ask:force_join"),("➕ تنظیم اد اجباری","ask:force_add"),("✏️ تنظیم متن خوشامد","ask:welcome_text"),("✏️ تنظیم متن خداحافظی","ask:farewell_text"),
+      ("🖼 تنظیم تصویر خوشامد","ask:welcome_image"),("🗑 زمان حذف خوشامد","ask:welcome_delete_seconds"),("🔐 تأیید عضو جدید (کپچا)","toggle:captcha_on")],
+      "rules":[("📜 مشاهده قوانین","show:rules"),("✏️ تنظیم قوانین","ask:rules"),("💬 افزودن پاسخ خودکار","ask:auto_reply"),("🗑 حذف پاسخ خودکار","ask:delete_reply"),("🚫 افزودن کلمه ممنوع","ask:bad_word"),("🧩 افزودن فرمان اختصاصی","ask:add_custom_command"),("🗑 حذف فرمان اختصاصی","ask:delete_custom_command"),("📝 افزودن یادداشت","ask:add_note"),("🗑 حذف یادداشت","ask:delete_note"),("📋 فهرست یادداشت‌ها","show:notes"),("📣 ارسال اطلاعیه","ask:announcement")],
       "members":[(x, "ask:"+a) for x,a in [("⚠️ اخطار عضو","warn"),("🔇 سکوت عضو","mute"),("🔊 رفع سکوت","unmute"),("⛔ مسدودسازی","ban"),("✅ رفع مسدودی","unban"),("👢 اخراج عضو","kick"), ("🧹 پاک‌کردن اخطارها","clear_warnings"), ("📋 فهرست مسدودها","show:ban_list"), ("🔇 فهرست ساکت‌ها","show:mute_list"), ("🔎 اطلاعات عضو","ask:member_info")]],
       "settings":[("⚙️ تنظیم سقف اخطار","ask:warn_limit"),("📜 تنظیم قوانین","ask:rules")],
       "referrals":[("💳 آمار کیف پول تومانی","show:wallet_stats"),("👥 آمار دعوت‌ها","show:referral_stats"),("🛒 درخواست‌های اشتراک","show:subscription_requests"),("💸 درخواست‌های برداشت","show:payout_requests"),("➕ تنظیم موجودی کیف پول","ask:wallet_adjust"),("📦 بسته‌های اشتراک","show:shop")],
@@ -354,7 +482,7 @@ def section_keyboard(section):
         ("📁 قفل فایل","toggle:lock_files"),("🎭 قفل استیکر/گیف","toggle:lock_stickers"),
         ("🎙 قفل ویس","toggle:lock_voice"),("⭕ قفل ویدئوی گرد","toggle:lock_video_notes"),
         ("📵 فیلتر شماره تماس","toggle:phone_filter"),("🧠 امنیت هوشمند گروه","toggle:group_smart_security"),
-        ("👋 خوشامدگویی","toggle:welcome_on"),("🌙 خداحافظی","toggle:farewell_on"),
+        ("👋 خوشامدگویی","toggle:welcome_on"),("🌙 خداحافظی","toggle:farewell_on"),("🔐 کپچا","toggle:captcha_on"),("🚨 ضد یورش","toggle:anti_raid_on"),
         ("🛂 تأیید ورود","toggle:join_approval"),("🌙 تنظیم ساعت سکوت","ask:quiet_hours"),
         ("⚙️ سقف اخطار","ask:warn_limit"),("📜 تنظیم قوانین","ask:rules"),
         ("🆔 نمایش تنظیمات یک گروه","ask:group_settings")
@@ -370,6 +498,10 @@ def section_keyboard(section):
         ("📢 تغییر لینک کانال","ask:channel_url"),
         ("🌐 تغییر لینک وب‌سایت","ask:website_url"),
         ("👥 تنظیم پاداش دعوت (تومان)","ask:referral_reward_toman"),
+        ("🛒 تنظیم بسته‌های اشتراک","ask:subscription_packages"),
+        ("🌐 نمایش فهرست پروکسی‌ها","show:proxies"),
+        ("➕ افزودن پروکسی تلگرام","ask:add_proxy"),
+        ("➖ حذف پروکسی با شماره","ask:delete_proxy"),
         ("📋 مشاهده تنظیمات فعلی","show:bot_settings")
       ]
     }
@@ -378,6 +510,64 @@ def section_keyboard(section):
     kb.row(types.InlineKeyboardButton("🏠 صفحهٔ اصلی پنل", callback_data="panel:home"),
            types.InlineKeyboardButton("⬅️ بازگشت", callback_data="panel:back"))
     return kb
+
+
+def group_panel_keyboard(chat_id, user_id=None):
+    """Full group panel. Everyone can view it; only authorized admins get live controls."""
+    settings = get_group_settings(chat_id)
+    can_manage = bool(user_id is not None and is_group_admin(chat_id, user_id))
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    labels = [
+        ("🔗 ضد لینک", "anti_link"), ("📢 ضد تبلیغ", "anti_ads"),
+        ("🚫 ضد اسپم", "anti_spam"), ("🔁 ضد تکرار", "anti_repeat"),
+        ("↪️ ضد فوروارد", "anti_forward"), ("🖼 قفل همه رسانه‌ها", "media_lock"),
+        ("🏷 قفل تگ و منشن", "lock_mentions"), ("#️⃣ قفل هشتگ", "lock_hashtags"),
+        ("👤 قفل نام‌کاربری", "lock_usernames"), ("📵 فیلتر شماره", "phone_filter"),
+        ("🖼 قفل عکس", "lock_photos"), ("🎞 قفل فیلم", "lock_videos"),
+        ("📁 قفل فایل", "lock_files"), ("🎭 قفل استیکر و گیف", "lock_stickers"),
+        ("🎙 قفل ویس", "lock_voice"), ("⭕ قفل ویدئوی گرد", "lock_video_notes"),
+        ("👋 خوشامدگویی", "welcome_on"), ("👋 خداحافظی", "farewell_on"),
+        ("🛂 تأیید ورود", "join_approval"), ("🔐 کپچا", "captcha_on"),
+        ("🚨 ضد یورش", "anti_raid_on"), ("🧠 امنیت هوشمند", "smart_security"),
+    ]
+    for label, key in labels:
+        enabled = bool(settings.get(key, False))
+        status = "🟢" if enabled else "⚪"
+        if can_manage:
+            kb.add(types.InlineKeyboardButton(f"{status} {label}", callback_data=f"gpanel:toggle:{key}"))
+        else:
+            kb.add(types.InlineKeyboardButton(f"🔒 {label}", callback_data="gpanel:locked"))
+    if can_manage:
+        kb.row(types.InlineKeyboardButton("📢 تنظیم جوین اجباری", callback_data="gpanel:configure_force_join"),
+               types.InlineKeyboardButton("➕ تنظیم اد اجباری", callback_data="gpanel:configure_force_add"))
+    else:
+        kb.row(types.InlineKeyboardButton("🔒 جوین اجباری", callback_data="gpanel:locked"),
+               types.InlineKeyboardButton("🔒 اد اجباری", callback_data="gpanel:locked"))
+    kb.row(types.InlineKeyboardButton("📜 مشاهده قوانین", callback_data="gpanel:rules"),
+           types.InlineKeyboardButton("📊 آمار گروه", callback_data="gpanel:stats"))
+    kb.row(types.InlineKeyboardButton("📚 راهنمای پنل", callback_data="gpanel:help"),
+           types.InlineKeyboardButton("🎮 بازی‌ها", callback_data="gpanel:games"))
+    kb.add(types.InlineKeyboardButton("🔄 تازه‌سازی پنل", callback_data="gpanel:refresh"))
+    return kb
+
+def send_group_panel(chat_id, message_id=None, user_id=None):
+    can_manage = bool(user_id is not None and is_group_admin(chat_id, user_id))
+    text = ("🛡️ <b>پنل کامل گروه — MASIH GUARD S1000+</b>\n━━━━━━━━━━━━━━━━━━\n"
+            "تمام گزینه‌های این گروه از همین پنل قابل مشاهده‌اند.\n"
+            f"جوین اجباری: {'روشن' if get_group_settings(chat_id).get('force_join_on') else 'خاموش'} | اد اجباری: {'روشن (' + str(get_group_settings(chat_id).get('force_add_count', 3)) + ')' if get_group_settings(chat_id).get('force_add_on') else 'خاموش'}\n"
+            f"وضعیت مجوز: {'🟢 فعال' if is_group_licensed(chat_id) else '🟠 غیرفعال؛ عملیات حفاظتی محدود است'}\n"
+            f"دسترسی شما: {'🛠 مدیر مجاز' if can_manage else '👁 مشاهده‌گر؛ دکمه‌های مدیریتی قفل هستند'}\n"
+            "🔒 اعضا می‌توانند بخش‌ها و راهنماها را ببینند؛ تغییر تنظیمات فقط با مجوز مدیر گروه انجام می‌شود.\n"
+            "⚠️ اجرای هر عملیات علاوه بر وضعیت دکمه، دوباره از نظر دسترسی بررسی می‌شود.")
+    markup = group_panel_keyboard(chat_id, user_id)
+    if message_id is not None:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+            return
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return
+    bot.send_message(chat_id, text, reply_markup=markup)
 
 def send_panel(chat_id, section="home", message_id=None, user_id=None):
     # The menu can be viewed by anyone in private chat; every privileged callback is owner-gated.
@@ -580,13 +770,28 @@ def referral_text(uid):
         try: BOT_USERNAME = bot.get_me().username or ""
         except Exception: pass
     link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else "نام کاربری ربات هنوز در دسترس نیست."
-    count = sum(1 for x in DATA.get("referrals", {}).values() if int(x.get("referrer", 0)) == int(uid))
+    count = sum(1 for x in DATA.get("referrals", {}).values() if isinstance(x, dict) and int(x.get("referrer", 0)) == int(uid))
     reward = max(0, int(bot_settings().get("referral_reward_toman", 5000)))
-    return (f"👥 <b>دعوت دوستان</b>\n━━━━━━━━━━━━━━\n🔗 لینک دعوت اختصاصی شما:\n<code>{esc(link)}</code>\n\n"
-            f"👥 دعوت‌های ثبت‌شده: {count}\n💳 پاداش هر دعوت معتبر: {reward:,} تومان\n"
-            "⚠️ برای ثبت و واریز پاداش، کاربر جدید باید از لینک شما وارد گفت‌وگوی خصوصی ربات شود و Start را بزند. هر کاربر فقط یک‌بار حساب می‌شود.")
+    return (
+        "🎁 <b>باشگاه دعوت دوستان | MASIH GUARD</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔗 <b>لینک اختصاصی دعوت شما</b>\n"
+        f"<code>{esc(link)}</code>\n\n"
+        f"👥 دعوت‌های ثبت‌شده: <b>{count}</b>\n"
+        f"💰 پاداش هر دعوت معتبر طبق تنظیم فعلی: <b>{reward:,} تومان</b>\n\n"
+        "📌 <b>روش استفاده</b>\n"
+        "۱. لینک بالا را برای دوستت بفرست.\n"
+        "۲. دوستت باید با همان لینک وارد گفت‌وگوی خصوصی ربات شود و Start را بزند.\n"
+        "۳. دعوت معتبر طبق قوانین ربات ثبت می‌شود و پاداش احتمالی به کیف پول تومانی اضافه خواهد شد.\n\n"
+        "⚠️ هر کاربر فقط یک‌بار محاسبه می‌شود؛ ثبت دعوت یا پاداش، تابع شرایط و تنظیمات ربات است.\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💳 برای دیدن موجودی، «کیف پول» را بزن؛ برای سوابق، «تراکنش‌ها» را انتخاب کن."
+    )
 
-SUBSCRIPTION_PACKAGES = ((30, 40000), (60, 80000), (90, 120000))
+
+def subscription_packages():
+    """Return the validated, currently configured subscription package list."""
+    return tuple((int(row[0]), int(row[1])) for row in bot_settings().get("subscription_packages", []))
 
 def subscription_support_keyboard():
     """Official purchase support links; bank details are never invented by the bot."""
@@ -603,7 +808,7 @@ def shop_keyboard():
         60: "🥈 ۶۰ روزه  ·  ۸۰٬۰۰۰ تومان",
         90: "🥇 ۹۰ روزه  ·  ۱۲۰٬۰۰۰ تومان",
     }
-    for days, price in SUBSCRIPTION_PACKAGES:
+    for days, price in subscription_packages():
         kb.add(types.InlineKeyboardButton(
             labels.get(days, f"⭐ {days} روز  ·  {price:,} تومان"),
             callback_data=f"shop:request:{days}:{price}"
@@ -620,7 +825,7 @@ def shop_text(uid):
     expiry = sub.get("expires") or "اشتراک فعال نیست"
     package_text = "\n".join(
         f"  ├ {days} روز  ·  <b>{price:,} تومان</b>"
-        for days, price in SUBSCRIPTION_PACKAGES
+        for days, price in subscription_packages()
     )
     status_icon = "🟢" if sub.get("expires") else "⚪"
     lines = [
@@ -674,7 +879,7 @@ def transactions_text(uid):
 
 def request_subscription(uid, days, price):
     days, price, uid = int(days), int(price), int(uid)
-    if (days, price) not in SUBSCRIPTION_PACKAGES:
+    if (days, price) not in subscription_packages():
         return "❌ بستهٔ اشتراک معتبر نیست."
     ensure_user(uid)
     reqs = DATA.setdefault("subscription_requests", {})
@@ -841,12 +1046,184 @@ def warn_member(chat_id, user_id, reason="تخلف از قوانین"):
         except Exception as e: print("Auto-ban error:",repr(e))
     save_data()
 
+
+def _force_join_channels(chat_id):
+    """Return the validated required-channel list for a group."""
+    rows = get_group_settings(chat_id).get("force_join_channels", [])
+    result = []
+    if not isinstance(rows, list):
+        return result
+    for row in rows[:10]:
+        if not isinstance(row, dict):
+            continue
+        ident = str(row.get("id", "")).strip()
+        url = str(row.get("url", "")).strip()
+        title = str(row.get("title", ident)).strip()[:80]
+        if ident and url.startswith(("https://t.me/", "http://t.me/")):
+            result.append({"id": ident, "url": url, "title": title or ident})
+    return result
+
+
+def force_join_missing(chat_id, user_id, force_refresh=False):
+    """Fail closed when Telegram cannot verify membership in a required channel."""
+    cache_key = (int(chat_id), int(user_id))
+    cached = FORCE_JOIN_CACHE.get(cache_key)
+    if not force_refresh and cached and cached[0] > time.monotonic():
+        return list(cached[1])
+    missing = []
+    for channel in _force_join_channels(chat_id):
+        try:
+            member = bot.get_chat_member(channel["id"], int(user_id))
+            status = str(getattr(member, "status", "") or "")
+            joined = status in ("creator", "administrator", "member") or (
+                status == "restricted" and bool(getattr(member, "is_member", False))
+            )
+            if not joined:
+                missing.append(channel)
+        except Exception as exc:
+            print("Force-join membership check error:", repr(exc))
+            missing.append(channel)
+    FORCE_JOIN_CACHE[cache_key] = (time.monotonic() + 8, list(missing))
+    return missing
+
+
+def force_join_markup(chat_id, user_id, missing=None):
+    missing = _force_join_channels(chat_id) if missing is None else missing
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for channel in missing[:10]:
+        kb.add(types.InlineKeyboardButton("📢 عضویت در " + channel["title"][:45], url=channel["url"]))
+    kb.add(types.InlineKeyboardButton("🔄 بررسی عضویت", callback_data=f"forcejoin:check:{int(chat_id)}:{int(user_id)}"))
+    return kb
+
+
+def force_add_count(chat_id, user_id):
+    group_rows = DATA.setdefault("force_add_credits", {}).get(str(chat_id), {})
+    invited = group_rows.get(str(user_id), []) if isinstance(group_rows, dict) else []
+    return len(set(str(x) for x in invited if str(x) != str(user_id)))
+
+
+def track_force_invite_link(chat_id, user_id):
+    """Create or reuse a personal invite link so only attributable joins are counted."""
+    try:
+        for existing_link, record in DATA.setdefault("force_invite_links", {}).items():
+            if isinstance(record, dict) and int(record.get("chat_id", 0)) == int(chat_id) and int(record.get("inviter_id", 0)) == int(user_id):
+                return existing_link, None
+        member = bot.get_chat_member(chat_id, bot.get_me().id)
+        if getattr(member, "status", "") not in ("administrator", "creator") or not bool(getattr(member, "can_invite_users", False)):
+            return None, "ربات باید مدیر گروه با مجوز «دعوت کاربران» باشد."
+        invite = bot.create_chat_invite_link(chat_id, name=f"MG:{int(user_id)}", creates_join_request=False)
+        link = str(getattr(invite, "invite_link", "") or "")
+        if not link:
+            return None, "تلگرام لینک دعوت برنگرداند."
+        DATA.setdefault("force_invite_links", {})[link] = {
+            "chat_id": int(chat_id), "inviter_id": int(user_id), "created_at": now_text()
+        }
+        save_data()
+        return link, None
+    except Exception as exc:
+        print("Create force invite link error:", repr(exc))
+        return None, "ساخت لینک دعوت ناموفق بود؛ دسترسی مدیر ربات و تنظیمات گروه را بررسی کن."
+
+
+@bot.chat_member_handler()
+def force_add_chat_member_tracker(update):
+    """Credit only joins made through a personal link created by /mylink."""
+    try:
+        chat_id = int(update.chat.id)
+        old_member = getattr(update, "old_chat_member", None)
+        new_member = getattr(update, "new_chat_member", None)
+        old_status = str(getattr(old_member, "status", "") or "")
+        new_status = str(getattr(new_member, "status", "") or "")
+        invite_obj = getattr(update, "invite_link", None)
+        link = str(getattr(invite_obj, "invite_link", "") or "")
+        if new_status not in ("member", "administrator", "creator") or old_status in ("member", "administrator", "creator"):
+            return
+        tracked = DATA.setdefault("force_invite_links", {}).get(link)
+        if not isinstance(tracked, dict) or int(tracked.get("chat_id", 0)) != chat_id:
+            return
+        inviter = int(tracked.get("inviter_id", 0) or 0)
+        joined_user_obj = getattr(new_member, "user", None)
+        joined_user = int(getattr(joined_user_obj, "id", 0) or 0)
+        if not inviter or not joined_user or joined_user == inviter:
+            return
+        credits = DATA.setdefault("force_add_credits", {}).setdefault(str(chat_id), {})
+        invited = credits.setdefault(str(inviter), [])
+        if str(joined_user) not in {str(x) for x in invited}:
+            invited.append(str(joined_user))
+            credits[str(inviter)] = invited[-1000:]
+            add_log("force_add_credit", chat_id, inviter, f"invited_user={joined_user}")
+            save_data()
+    except Exception as exc:
+        print("Force-add invite tracking error:", repr(exc))
+
+
+
+def entry_gate_notice_allowed(chat_id, user_id):
+    key = (int(chat_id), int(user_id))
+    now = time.monotonic()
+    expiry = ENTRY_GATE_NOTICE_CACHE.get(key, 0)
+    if expiry > now:
+        return False
+    ENTRY_GATE_NOTICE_CACHE[key] = now + 10
+    if len(ENTRY_GATE_NOTICE_CACHE) > 5000:
+        for old_key, old_expiry in list(ENTRY_GATE_NOTICE_CACHE.items()):
+            if old_expiry <= now:
+                ENTRY_GATE_NOTICE_CACHE.pop(old_key, None)
+    return True
+
+
+def enforce_group_entry_gates(message):
+    """Enforce configured join/add requirements before ordinary group commands run."""
+    chat, user = message.chat, message.from_user
+    if not user or chat.type not in ("group", "supergroup"):
+        return False
+    if not is_group_licensed(chat.id):
+        return False
+    settings = get_group_settings(chat.id)
+    if not settings.get("force_join_on") and not settings.get("force_add_on"):
+        return False
+    role = group_admin_status(chat.id, user.id)
+    if role is True or role is None:
+        return False
+    if settings.get("force_join_on"):
+        missing = force_join_missing(chat.id, user.id)
+        if missing:
+            safe_delete(message)
+            if entry_gate_notice_allowed(chat.id, user.id):
+                try:
+                    name = esc(getattr(user, "first_name", "") or "عضو")
+                    bot.send_message(chat.id, f"🔒 {name}، برای ارسال پیام ابتدا عضو کانال‌های لازم شو و «بررسی عضویت» را بزن.", reply_markup=force_join_markup(chat.id, user.id, missing))
+                except Exception as exc:
+                    print("Force-join prompt error:", repr(exc))
+            return True
+    if settings.get("force_add_on"):
+        required = max(1, min(100, int(settings.get("force_add_count", 3) or 3)))
+        actual = force_add_count(chat.id, user.id)
+        if actual < required:
+            safe_delete(message)
+            if entry_gate_notice_allowed(chat.id, user.id):
+                try:
+                    bot.send_message(chat.id, f"➕ برای ارسال پیام، باید {required} عضو معتبر دعوت کنی. دعوت ثبت‌شده: {actual}. لینک اختصاصی خودت را با /mylink بگیر.")
+                except Exception as exc:
+                    print("Force-add prompt error:", repr(exc))
+            return True
+    return False
+
+
 def process_group_security(message):
     chat,user=message.chat,message.from_user
-    if not user or chat.type not in ("group","supergroup") or is_group_admin(chat.id,user.id): return False
+    if not user or chat.type not in ("group","supergroup"): return False
     s=get_group_settings(chat.id)
+    gate_admin_status = group_admin_status(chat.id, user.id)
+    if gate_admin_status is True or gate_admin_status is None:
+        return False
     if not DATA.get("settings", {}).get("smart_security", True) or not s.get("smart_security", True): return False
     if str(user.id) in {str(x) for x in s.get("whitelist", [])}: return False
+    admin_status = group_admin_status(chat.id, user.id)
+    if admin_status is True or admin_status is None:
+        # Skip enforcement if the member is an admin or Telegram could not confirm
+        # their role; avoid accidental moderation during an API outage.
+        return False
     text=get_text(message); key=f"{chat.id}:{user.id}"
     prev=DATA["seen"].get(key,{}); now=time.time(); reason=None
     if is_quiet_hours(s): reason="ارسال پیام در ساعت سکوت شبانه"
@@ -1017,6 +1394,21 @@ _GROUP_ALIASES = {
     'توضیحات گروه به': 'set_description',
 }
 
+def _strip_group_bot_prefix(text):
+    """Remove a leading bot name/mention so group creators can speak naturally."""
+    value = (text or "").strip()
+    if not value:
+        return value
+    # Accept an explicit bot mention at the beginning, e.g. @MasihGuard قفل لینک.
+    value = re.sub(r"^@[A-Za-z0-9_]{4,}(?:\s+|[,،:؛-]+)?", "", value, count=1)
+    # Accept Persian and Latin wake words only at the start; never strip words mid-sentence.
+    value = re.sub(
+        r"^(?:(?:ربات|هوش(?:\s*مصنوعی)?|دستیار|مسیح\s*گارد|ماسیح\s*گارد|ماسح\s*گارد|masih\s*guard|masihguard))\s*[,،:؛-]?\s*",
+        "", value, count=1, flags=re.IGNORECASE
+    )
+    return value.strip()
+
+
 def _normalize_group_command(text):
     value = (text or "").strip().casefold()
     value = value.replace("ي", "ی").replace("ك", "ک")
@@ -1104,6 +1496,17 @@ def _handle_group_shortcut(message, text):
             return True
         if not user or not is_group_admin(chat_id, uid):
             bot.reply_to(message, "⛔ فقط مدیران گروه می‌توانند تنظیمات امنیتی را تغییر دهند.")
+            return True
+        # Do not enable moderation filters that the bot cannot enforce due to missing Telegram rights.
+        deletion_filters = {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "anti_forward", "media_lock",
+                            "lock_photos", "lock_videos", "lock_files", "lock_stickers", "lock_voice",
+                            "lock_video_notes", "phone_filter", "lock_mentions", "lock_hashtags", "lock_usernames"}
+        required_permission = "can_delete_messages" if setting in deletion_filters else (
+            "can_restrict_members" if setting in {"captcha_on", "anti_raid_on"} else
+            "can_invite_users" if setting == "join_approval" else "")
+        if enabled and required_permission and not bot_has_group_permission(chat_id, required_permission):
+            friendly = {"can_delete_messages": "حذف پیام‌ها", "can_restrict_members": "محدودکردن اعضا", "can_invite_users": "دعوت کاربران/مدیریت درخواست ورود"}.get(required_permission, required_permission)
+            bot.reply_to(message, f"⚠️ برای فعال‌کردن این قابلیت، ربات باید مدیر گروه با مجوز «{friendly}» باشد. تنظیم تغییر نکرد.")
             return True
         get_group_settings(chat_id)[setting] = enabled
         save_data()
@@ -1317,20 +1720,34 @@ def group_message_handler(message):
     try:
         text = get_text(message)
         normalized_text = (text or "").strip().casefold().replace("ي", "ی").replace("ك", "ک")
+        # Group creator/admin commands may be written naturally with or without addressing the bot.
+        command_text = _strip_group_bot_prefix(text)
         first_token = normalized_text.split(maxsplit=1)[0] if normalized_text else ""
+        if first_token.split("@", 1)[0] == "/mylink":
+            uid = getattr(getattr(message, "from_user", None), "id", 0)
+            if not is_group_licensed(message.chat.id):
+                bot.reply_to(message, "⚠️ برای استفاده از لینک دعوت اختصاصی، مجوز گروه باید فعال باشد.")
+                return
+            if not get_group_settings(message.chat.id).get("force_add_on"):
+                bot.reply_to(message, "ℹ️ اد اجباری در این گروه خاموش است.")
+                return
+            link, error = track_force_invite_link(message.chat.id, uid)
+            if error:
+                bot.reply_to(message, "⚠️ " + esc(error))
+            else:
+                cfg = get_group_settings(message.chat.id)
+                required = max(1, min(100, int(cfg.get("force_add_count", 3) or 3)))
+                current = force_add_count(message.chat.id, uid)
+                bot.reply_to(message, "🔗 لینک دعوت اختصاصی شما:\n" + esc(link) + f"\n📊 دعوت ثبت‌شده: {current}/{required}\nدعوت‌ها فقط وقتی شمرده می‌شوند که عضو جدید با همین لینک وارد شود.")
+            return
         if first_token.split("@", 1)[0] == "/start":
             bot.reply_to(message, group_start_guide(getattr(message.chat, "title", "گروه")))
             return
-        if normalized_text == "پنل":
+        if enforce_group_entry_gates(message):
+            return
+        if re.sub(r"[\s‌]+", "", normalized_text) in {"پنل", "پنلمدیریت", "تنظیماتگروه", "panel", "settings", "پنلگروه"}:
             uid = getattr(getattr(message, "from_user", None), "id", 0)
-            if is_owner(uid):
-                try:
-                    bot.send_message(uid, "🔐 پنل خصوصی باز شد؛ تعاملات پنل در گروه ارسال نمی‌شوند.")
-                    send_panel(uid, user_id=uid)
-                except Exception:
-                    bot.reply_to(message, "برای بازکردن پنل، ابتدا گفت‌وگوی خصوصی ربات را باز کن و /start را بزن.")
-            else:
-                bot.reply_to(message, "⛔ فقط مالک ربات می‌تواند پنل مدیریت را باز کند.")
+            send_group_panel(message.chat.id, user_id=uid)
             return
         # Owner activates the current group directly; no group ID needs to be copied.
         normalized_activation = normalized_text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
@@ -1374,6 +1791,52 @@ def group_message_handler(message):
                          f"📅 پایان اعتبار: {esc(expires or 'دائمی')}\n"
                          "🌈 تنظیمات این گروه از این پس جداگانه ذخیره می‌شوند.")
             return
+        # Reply to a proxy message and write «ثبت پروکسی» to store that exact link.
+        proxy_command = re.sub(r"[\s‌]+", "", normalized_text)
+        if proxy_command in {"ثبتپروکسی", "registerproxy"}:
+            uid = getattr(getattr(message, "from_user", None), "id", 0)
+            if not is_owner(uid):
+                bot.reply_to(message, "⛔ ثبت پروکسی فقط برای مالک ربات مجاز است.")
+                return
+            replied = getattr(message, "reply_to_message", None)
+            raw_proxy = ((getattr(replied, "text", None) or getattr(replied, "caption", None) or "").strip() if replied else "")
+            candidates = re.findall(r"""(?:https?://|tg://)[^\s<>"']+""", raw_proxy)
+            candidates = [x.rstrip(".,،؛!؟)]}") for x in candidates]
+            proxy = next((x for x in candidates if proxy_endpoint(x)), raw_proxy if proxy_endpoint(raw_proxy) else "")
+            if not proxy:
+                bot.reply_to(message, "⚠️ روی پیامی که لینک پروکسی دارد ریپلای کن و بنویس «ثبت پروکسی».")
+            elif proxy in DATA["proxies"]:
+                bot.reply_to(message, "ℹ️ این پروکسی قبلاً ثبت شده است.")
+            elif len(DATA["proxies"]) >= 20:
+                bot.reply_to(message, "⚠️ ظرفیت ۲۰ پروکسی پر شده؛ ابتدا یکی را حذف کن.")
+            else:
+                DATA["proxies"].append(proxy)
+                save_data()
+                add_log("proxy_added", message.chat.id, uid, "پروکسی با ریپلای ثبت شد")
+                ping = proxy_ping_ms(proxy)
+                bot.reply_to(message, "✅ پروکسیِ پیام ریپلای‌شده ثبت شد." +
+                             (f"\n🟢 پاسخ TCP: {ping} ms" if ping is not None else "\n⚠️ لینک ذخیره شد، اما اتصال TCP فعلاً پاسخ نداد."))
+            return
+        # Public group commands are handled before the license gate.
+        compact_public = re.sub(r"[\s‌]+", "", normalized_text)
+        if compact_public in {"راهنما", "help", "commands", "دستورات"}:
+            bot.reply_to(message, "📚 <b>راهنمای گروه</b>\n• «پنل» — پنل تنظیمات همین گروه\n• «قوانین» — نمایش قوانین\n• «آمار» — آمار پایه\n• برای اقدام روی عضو، روی پیام او ریپلای کن.\n⚠️ امکانات حفاظتی به مجوز گروه و دسترسی ادمین ربات نیاز دارند.")
+            return
+        if compact_public in {"قوانین", "قانون", "rules"}:
+            bot.reply_to(message, esc(get_group_settings(message.chat.id).get("rules", "قوانینی ثبت نشده است.")))
+            return
+        if compact_public in {"آمار", "آمارگروه", "stats"}:
+            bot.reply_to(message, f"📊 <b>آمار گروه</b>\n💬 پیام‌ها: {DATA['stats'].get('messages', 0)}\n🚫 موارد مسدودشده: {DATA['stats'].get('blocked', 0)}\n⚠️ اخطارها: {DATA['stats'].get('warns', 0)}")
+            return
+        if compact_public in {"بازی", "یهبازی", "بازیها", "بازی ها", "game", "play"}:
+            game_url = get_game_url()
+            if game_url.startswith("https://"):
+                game_kb = types.InlineKeyboardMarkup()
+                game_kb.add(types.InlineKeyboardButton("🎮 باز کردن صفحه بازی", url=game_url))
+                bot.reply_to(message, "🎮 <b>بازی MASIH GUARD</b>\nبرای باز کردن صفحهٔ بازی روی دکمه بزن.", reply_markup=game_kb)
+            else:
+                bot.reply_to(message, "⚠️ آدرس صفحهٔ بازی هنوز از طرف هاست مشخص نشده است. متغیر WEB_GAME_URL یا PUBLIC_BASE_URL باید تنظیم باشد.")
+            return
         if not is_group_licensed(message.chat.id):
             # Keep the bot inert in unlicensed groups and notify once per group.
             req = DATA.setdefault("group_requests", {})
@@ -1384,18 +1847,23 @@ def group_message_handler(message):
                 try: bot.send_message(message.chat.id, group_install_message(message.chat.id, getattr(message.chat,"title", "این گروه")), reply_markup=support_contact_markup())
                 except Exception: pass
             return
-        if text and handle_group_info_request(message, text):
+        if command_text and handle_group_info_request(message, command_text):
             return
         compact_group = re.sub(r"[\s‌]+", "", normalized_text)
+        # Basic commands stay responsive before the group license gate.
+        if compact_group in {"راهنما", "help", "commands", "دستورات"}:
+            bot.reply_to(message, "📚 <b>راهنمای گروه</b>\n• «پنل» — پنل تنظیمات همین گروه\n• «قوانین» — نمایش قوانین\n• «آمار» — آمار پایه\n• برای اقدام روی عضو، روی پیام او ریپلای کن.\n⚠️ امکانات حفاظتی به مجوز گروه و دسترسی ادمین ربات نیاز دارند.")
+            return
+        if compact_group in {"قوانین", "قانون", "rules"}:
+            bot.reply_to(message, esc(get_group_settings(message.chat.id).get("rules", "قوانینی ثبت نشده است.")))
+            return
+        if compact_group in {"آمار", "آمارگروه", "stats"}:
+            bot.reply_to(message, f"📊 <b>آمار گروه</b>\n💬 پیام‌ها: {DATA['stats'].get('messages', 0)}\n🚫 موارد مسدودشده: {DATA['stats'].get('blocked', 0)}\n⚠️ اخطارها: {DATA['stats'].get('warns', 0)}")
+            return
         if compact_group in {"پروکسی", "لیستپروکسی", "لیستپروکسیها", "پروکسیها", "پروکسیلیست", "پروکسیلیستها", "proxy", "proxies", "proxylist"}:
             bot.reply_to(message, proxy_list_text(limit=20, with_ping=True)); return
         if compact_group in {"فونت", "لیستفونت", "فونتها", "لیستفونتها", "فونتلیست", "فونتلیستها", "فونت۲۰۰", "فونت200", "font", "fonts", "fontlist"}:
             bot.reply_to(message, "🔤 متن یا اسم دلخواهت رو در پیوی ربات بفرست تا ۲۰۰ مدل فونت فانتزی بسازم."); return
-        if compact_group in {"بازی", "یهبازی", "یهبازی", "game", "play"}:
-            uid = getattr(getattr(message, "from_user", None), "id", 0); key=f"{message.chat.id}:{uid}"
-            idx=GAME_CYCLES.get(key,0)%10
-            games=["🏀 بازی اول: بسکتبال! توپ رو تصور کن؛ یه عدد از ۱ تا ۵ بفرست.", "⚽ بازی دوم: فوتبال! یه عدد از ۱ تا ۵ انتخاب کن.", "🧩 بازی سوم: معمای کوتاه! یه عدد از ۱ تا ۵ بفرست.", "🎯 بازی چهارم: هدف‌گیری! یه عدد از ۱ تا ۵ بفرست.", "🪨 بازی پنجم: سنگ‌کاغذ‌قیچی؛ بنویس سنگ، کاغذ یا قیچی.", "🧠 بازی ششم: حدس عدد؛ یه عدد از ۱ تا ۱۰ بفرست.", "🎲 بازی هفتم: تاس شانسی؛ عدد ۱ تا ۶ انتخاب کن.", "🧮 بازی هشتم: حاصل ۷+۸ چنده؟", "🔤 بازی نهم: با حرف «م» یه کلمه بگو.", "🏁 بازی دهم: یه عدد از ۱ تا ۱۰ انتخاب کن."]
-            GAME_CYCLES[key]=idx+1; bot.reply_to(message,games[idx]); return
         # Tag only users the bot has actually observed; Telegram Bot API cannot enumerate all group members.
         tag_match = re.fullmatch(r"(?:تگ|تگکن|منشن)\s*(\d{1,3})?", normalized_text.replace("‌", " ").strip())
         if tag_match:
@@ -1424,7 +1892,7 @@ def group_message_handler(message):
             bot.reply_to(message, "جانم! 🌹 برای سؤال، بنویس «ربات سؤال تو» یا «هوش سؤال تو». برای تغییر تنظیمات، دستور را روشن و واضح بنویس؛ مثلاً «قفل لینک روشن کن». ")
             return
         # Allow supported Persian group-management commands without requiring a reply to the bot.
-        if text and handle_ai_group_management(message, text.strip()):
+        if command_text and handle_ai_group_management(message, command_text):
             return
         # AI can be activated by replying to the bot or by starting with «هوش»، «ربات» or «دستیار».
         global BOT_USERNAME, BOT_ID
@@ -1442,23 +1910,55 @@ def group_message_handler(message):
                                  or (BOT_USERNAME and (getattr(getattr(replied, "from_user", None), "username", "") or "").casefold() == BOT_USERNAME)))
         ai_question = ""
         if text and text.strip() and not text.strip().startswith("/"):
+            raw_text = text.strip()
+            normalized_ai = raw_text.casefold().replace("ي", "ی").replace("ك", "ک")
             if reply_to_bot:
-                ai_question = text.strip()
+                ai_question = raw_text
             else:
-                normalized_ai = text.strip().casefold().replace("ي", "ی").replace("ك", "ک")
-                for prefix in ("از ربات بپرس ", "دستیار ", "ربات ", "هوش مصنوعی ", "هوش ", "هوش‌ ", "هش ", "هوس ", "هوشصنعتی "):
+                prefixes = ("از ربات بپرس ", "دستیار ", "ربات ", "هوش مصنوعی ", "هوش ", "هوش‌ ", "هش ", "هوس ", "هوشصنعتی ", "masih guard ", "masihguard ")
+                for prefix in prefixes:
                     if normalized_ai.startswith(prefix):
-                        ai_question = text.strip()[len(prefix):].strip()
+                        ai_question = raw_text[len(prefix):].strip()
                         break
-        if ai_question:
-            status = bot.reply_to(message, "🧠 دارم بررسی می‌کنم…")
-            answer = ask_ai(ai_question)
-            try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
-            except Exception: bot.send_message(message.chat.id, esc(answer[:3900]), reply_to_message_id=message.message_id)
-            return
+                # Also respond to direct mentions of the bot, without answering every unrelated group message.
+                mention_only = False
+                if not ai_question and BOT_USERNAME and ("@" + BOT_USERNAME) in normalized_ai:
+                    ai_question = re.sub(r"@" + re.escape(BOT_USERNAME), "", raw_text, flags=re.I).strip(" ,،:؛!?؟")
+                    mention_only = not bool(ai_question)
+                named_bot_only = False
+                if not ai_question and any(name in normalized_ai for name in ("masih guard", "masihguard", "مسیح گارد", "ماسیح گارد", "ماسح گارد")):
+                    ai_question = re.sub(r"(?i)masih\s*guard|masihguard|مسیح\s*گارد|ماسیح\s*گارد|ماسح\s*گارد", "", raw_text).strip(" ,،:؛!?؟")
+                    named_bot_only = not bool(ai_question)
+                # Feature questions can be asked naturally without a fixed command prefix.
+                feature_terms = ("ضد لینک", "ضدلینک", "ضد اسپم", "ضداسپم", "کپچا", "پنل", "قوانین", "قانون", "آمار", "بازی", "فونت", "پروکسی", "خوشامد", "امنیت گروه", "امکانات ربات", "ربات چیکار", "ربات چکار")
+                question_cues = ("چطور", "چجوری", "چگونه", "چرا", "چیه", "چیست", "میشه", "می‌شه", "راهنما", "کمک", "امکانات", "توضیح", "بگو", "چکار", "چیکار", "کار می کنه", "کار می‌کنه")
+                action_cues = ("روشن کن", "خاموش کن", "فعال کن", "غیرفعال کن", "قفل کن", "باز کن", "تغییر بده", "بن کن", "سکوت کن", "اخراج کن", "حذف کن", "تنظیم کن")
+                if not ai_question and any(term in normalized_ai for term in feature_terms) and any(cue in normalized_ai for cue in question_cues) and not any(cue in normalized_ai for cue in action_cues):
+                    ai_question = raw_text
+                if named_bot_only or mention_only:
+                    bot.reply_to(message, "جانم؟ 🌈 دربارهٔ امکانات، امنیت گروه یا پنل چی می‌خوای بدونی؟")
+                    return
+                if not ai_question and normalized_ai.strip() in {"ربات", "هوش", "هوش مصنوعی", "دستیار", "masih guard", "masihguard"}:
+                    bot.reply_to(message, "جانم؟ 🌈 سؤالت رو هم بنویس تا راهنمایی‌ات کنم.")
+                    return
+            if ai_question:
+                # If the user prefixed a real implemented command with “ربات”, run the command path,
+                # not a text-only AI answer. All operations still verify admin and bot permissions.
+                if ai_question and _handle_group_shortcut(message, ai_question):
+                    return
+                if not ai_question:
+                    return
+                if not ai_question.strip():
+                    bot.reply_to(message, "جانم؟ دربارهٔ چه چیزی راهنمایی می‌خوای؟")
+                    return
+                status = bot.reply_to(message, "🧠 دارم بررسی می‌کنم…")
+                answer = ask_ai(ai_question)
+                try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
+                except Exception: bot.send_message(message.chat.id, esc(answer[:3900]), reply_to_message_id=message.message_id)
+                return
         # Track group activity and bounded message history for selected statistics/cleanup features.
         track_group_activity(message.chat.id, getattr(message.from_user,"id",0), message.message_id)
-        if text and _handle_group_shortcut(message, text):
+        if command_text and _handle_group_shortcut(message, command_text):
             save_data()
             return
         # Group management shortcuts work only for admins and licensed groups.
@@ -1516,6 +2016,13 @@ def group_message_handler(message):
         if process_group_security(message): return
         if text:
             settings=get_group_settings(message.chat.id)
+            note_match = re.fullmatch(r"#([\w\u0600-\u06ff-]{1,40})", text.strip())
+            if note_match:
+                note_name = note_match.group(1).lower()
+                note_value = settings.get("notes", {}).get(note_name)
+                if note_value is not None:
+                    bot.reply_to(message, "📝 <b>" + esc(note_name) + "</b>\n" + esc(note_value))
+                    return
             handled=False
             for keyword,reply in settings.get("auto_replies",{}).items():
                 if keyword and keyword.casefold() in text.casefold():
@@ -1577,7 +2084,43 @@ def bot_added_or_removed(update):
 def welcome_new_members(message):
     if not is_group_licensed(message.chat.id): return
     s=get_group_settings(message.chat.id)
+    chat_id = int(message.chat.id)
+    join_key = str(chat_id)
+    now_ts = time.time()
+    join_times = [float(t) for t in DATA.setdefault("join_times", {}).get(join_key, []) if now_ts - float(t) <= 30]
+    join_times.extend([now_ts] * len(message.new_chat_members))
+    DATA.setdefault("join_times", {})[join_key] = join_times[-100:]
+    raid_triggered = bool(s.get("anti_raid_on") and len(join_times) >= 8 and float(s.get("raid_mode_until", 0) or 0) <= now_ts)
+    if raid_triggered:
+        s["raid_mode_until"] = now_ts + 600
+        add_log("anti_raid_triggered", chat_id, 0, f"joins_30s={len(join_times)}; duration=600s")
+        try: bot.send_message(chat_id, "🚨 <b>حالت ضد یورش فعال شد</b>\nورودهای پیاپی شناسایی شد؛ اعضای تازه‌وارد باید تأیید کپچا را انجام دهند. این حالت پس از ۱۰ دقیقه خودکار پایان می‌یابد.")
+        except Exception: pass
+    raid_active = bool(s.get("anti_raid_on") and float(s.get("raid_mode_until", 0) or 0) > now_ts)
+    save_data()
     for member in message.new_chat_members:
+        if s.get("captcha_on") or raid_active:
+            member_id = int(member.id)
+            captcha_key = f"{chat_id}:{member_id}"
+            a, b = random.randint(2, 9), random.randint(1, 9)
+            answer = a + b
+            options = list({answer, answer + random.choice([1, 2]), max(0, answer - random.choice([1, 2]))})
+            while len(options) < 3: options.append(answer + len(options) + 2)
+            random.shuffle(options)
+            try:
+                me = bot.get_me(); bot_member = bot.get_chat_member(chat_id, me.id)
+                if getattr(bot_member, "status", "") == "creator" or bool(getattr(bot_member, "can_restrict_members", False)):
+                    bot.restrict_chat_member(chat_id, member_id, permissions=types.ChatPermissions(can_send_messages=False, can_send_audios=False, can_send_documents=False, can_send_photos=False, can_send_videos=False, can_send_video_notes=False, can_send_voice_notes=False, can_send_polls=False, can_send_other_messages=False, can_add_web_page_previews=False))
+                    DATA.setdefault("captchas", {})[captcha_key] = {"answer": answer, "expires": time.time() + 300, "created": now_text()}
+                    save_data()
+                    captcha_kb = types.InlineKeyboardMarkup(row_width=3)
+                    captcha_kb.row(*[types.InlineKeyboardButton(str(value), callback_data=f"captcha:{member_id}:{value}") for value in options])
+                    bot.send_message(chat_id, f"🔐 <b>تأیید ورود</b>\n{esc(member.first_name or 'عضو جدید')}، برای فعال‌شدن امکان ارسال پیام، جواب این سؤال را انتخاب کن: <b>{a} + {b} = ؟</b>\n⏳ اعتبار دکمه‌ها: ۵ دقیقه", reply_markup=captcha_kb)
+                else:
+                    bot.send_message(chat_id, "⚠️ کپچا در تنظیمات روشن است، اما ربات مجوز محدودکردن اعضا ندارد؛ از مدیر بخواه مجوز «محدودکردن اعضا» را فعال کند.")
+            except Exception as captcha_error:
+                DATA.setdefault("captchas", {}).pop(captcha_key, None); save_data()
+                print("Captcha setup error:", repr(captcha_error))
         DATA["stats"]["joins"]+=1
         gs=DATA.setdefault("group_stats",{}).setdefault(str(message.chat.id),{"messages":0,"blocked":0,"joins":0,"leaves":0})
         gs["joins"]=int(gs.get("joins",0))+1
@@ -1637,8 +2180,33 @@ def handle_join_request(request):
             DATA["stats"]["joins"]+=1; add_log("join_request_approved",request.chat.id,request.from_user.id,"تأیید خودکار ورود"); save_data()
     except Exception as e: print("Join request approval error:",repr(e))
 
+def local_bot_faq(question):
+    """Useful Persian answers when the optional external AI API is not configured."""
+    q = re.sub(r"[\s‌]+", " ", str(question or "").casefold().replace("ي", "ی").replace("ك", "ک")).strip()
+    if any(x in q for x in ("قفل لینک", "ضد لینک", "ضدلینک", "لینک ممنوع")):
+        return "🔗 برای تنظیم ضدلینک، در گروه بنویس «پنل» و بخش امنیت را باز کن؛ تغییر تنظیمات فقط برای مدیر گروه فعال است. ربات برای حذف لینک‌ها باید مجوز حذف پیام داشته باشد."
+    if any(x in q for x in ("ضد اسپم", "ضداسپم", "اسپم", "پیام تکراری")):
+        return "🛡️ برای کنترل اسپم و پیام تکراری، پنل گروه را با نوشتن «پنل» باز کن. مدیر گروه می‌تواند گزینه‌های امنیتی را تغییر دهد؛ برای اجرای حذف پیام، ربات به مجوز حذف پیام نیاز دارد."
+    if any(x in q for x in ("کپچا", "تأیید ورود", "تایید ورود", "عضو جدید")):
+        return "🔐 کپچا و تأیید ورود را از پنل گروه مدیریت کن. ربات باید مدیر گروه و دارای مجوز محدودکردن اعضا باشد؛ حتماً پس از فعال‌سازی، ورود عضو جدید را در گروه آزمایش کن."
+    if any(x in q for x in ("پنل", "تنظیمات گروه", "مدیریت گروه")):
+        return "🛡️ برای دیدن پنل کامل همین گروه بنویس «پنل». همه می‌توانند راهنما و آمار را ببینند؛ دکمه‌های تغییر تنظیمات فقط برای مدیران گروه فعال هستند."
+    if any(x in q for x in ("بازی", "گیم", "بازی ها", "بازی‌ها")):
+        return "🎮 برای بازی‌ها بنویس «بازی» یا از دکمهٔ بازی‌ها در پنل گروه استفاده کن. اگر صفحهٔ بازی باز نشد، آدرس HTTPS آن باید در WEB_GAME_URL هاست تنظیم شده باشد."
+    if any(x in q for x in ("فونت", "فانتزی")):
+        return "🔤 برای ساخت فونت فانتزی، در گفت‌وگوی خصوصی ربات کلمهٔ «فونت» را بفرست و بعد متن دلخواهت را ارسال کن."
+    if any(x in q for x in ("پروکسی", "proxy")):
+        return "🌐 برای دیدن فهرست پروکسی‌ها، در گفت‌وگوی خصوصی ربات «پروکسی» را بفرست. افزودن یا حذف پروکسی به سطح دسترسی مالک نیاز دارد."
+    if any(x in q for x in ("قانون", "قوانین")):
+        return "📜 برای دیدن قوانین گروه، بنویس «قوانین» یا در پنل روی «مشاهده قوانین» بزن."
+    if any(x in q for x in ("آمار", "چند نفر", "تعداد اعضا")):
+        return "📊 برای آمار پایه بنویس «آمار»؛ آمار دقیق‌تر در پنل گروه در دسترس است. اطلاعات اعضا به داده‌هایی محدود است که تلگرام و ربات در اختیار می‌گذارند."
+    if any(x in q for x in ("سلام", "درود", "خوبی", "چطوری")):
+        return "سلام! 🌈 من MASIH GUARD هستم. دربارهٔ پنل گروه، امنیت، قوانین، بازی‌ها، فونت‌ها یا امکاناتم بپرس. برای اجرای تنظیمات مدیریتی باید مدیر گروه باشی."
+    return "🧠 پیام مرتبطت رو دریافت کردم. می‌تونم دربارهٔ پنل گروه، امنیت، ضدلینک، ضداسپم، کپچا، قوانین، آمار، بازی‌ها، فونت و پروکسی راهنمایی بدم. برای گفت‌وگوی آزادتر، مالک باید AI_API_KEY معتبر را در هاست تنظیم کند."
+
 def ask_ai(question):
-    if not AI_API_KEY: return "⚠️ کلید هوش مصنوعی تنظیم نشده است. متغیر AI_API_KEY را در هاست وارد کن."
+    if not AI_API_KEY: return local_bot_faq(question)
     system_prompt = (
         "تو دستیار هوش مصنوعی کاملاً فارسیِ MASIH GUARD هستی. همیشه فقط به زبان فارسی پاسخ بده؛ "
         "همهٔ توضیح‌ها، راهنماها، عنوان‌ها و پیام‌های خطا باید فارسی و روان باشند. "
@@ -1784,6 +2352,11 @@ def handle_show(uid, action):
     elif action=="status": bot.send_message(uid,f"🚀 <b>{BRAND} {VERSION}</b>\nربات در حال اجراست.\nهوش مصنوعی: {'تنظیم شده' if AI_API_KEY else 'تنظیم نشده'}")
     elif action=="rules":
         p=WAITING.get(uid,{}); bot.send_message(uid,esc(get_group_settings(p.get("chat_id",uid))["rules"]))
+    elif action=="notes":
+        p=WAITING.get(uid,{})
+        notes=get_group_settings(p.get("chat_id",uid)).get("notes",{})
+        body="\n\n".join(f"<b>#{esc(k)}</b>\n{esc(v)}" for k,v in notes.items())
+        bot.send_message(uid,"📝 <b>یادداشت‌های گروه</b>\n"+(body or "یادداشتی ثبت نشده است."))
     elif action=="proxies":
         bot.send_message(uid,proxy_list_text(limit=20, with_ping=True))
     elif action=="group_licenses":
@@ -1846,7 +2419,7 @@ def handle_show(uid, action):
     elif action=="shop": bot.send_message(uid,shop_text(uid),reply_markup=shop_keyboard())
     elif action=="bot_settings":
         cfg = bot_settings()
-        packages = "، ".join(f"{days} روز/{price:,} تومان" for days, price in SUBSCRIPTION_PACKAGES)
+        packages = "، ".join(f"{days} روز/{price:,} تومان" for days, price in subscription_packages())
         custom_intro = "سفارشی" if str(cfg.get("public_features", "")).strip() else "پیش‌فرض"
         bot.send_message(uid,
             "🎛️ <b>تنظیمات عمومی ذخیره‌شده</b>\n━━━━━━━━━━━━━━\n"
@@ -1870,6 +2443,64 @@ def start_command(message):
         return
     bot.reply_to(message, group_start_guide(getattr(message.chat,"title","گروه")))
 
+@bot.message_handler(commands=["health", "statuscheck", "diagnose"])
+def health_command(message):
+    """A small live diagnostic without exposing secrets or internal configuration to groups."""
+    user = getattr(message, "from_user", None)
+    uid = int(getattr(user, "id", 0) or 0)
+    chat_type = getattr(getattr(message, "chat", None), "type", "private")
+    uptime = max(0, int(time.time() - STARTED_AT))
+    days, rem = divmod(uptime, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_text = f"{days}روز {hours}ساعت {minutes}دقیقه {seconds}ثانیه"
+    if chat_type != "private" or not is_owner(uid):
+        bot.reply_to(message, f"🟢 <b>{BRAND} {VERSION}</b> در حال اجراست.\n⏱ زمان فعالیت این اجرا: {esc(uptime_text)}")
+        return
+    telegram_ok = False
+    bot_label = "نامشخص"
+    try:
+        me = bot.get_me(timeout=5)
+        telegram_ok = True
+        bot_label = "@" + me.username if getattr(me, "username", None) else str(getattr(me, "first_name", "ربات"))
+    except Exception as error:
+        print("Health Telegram API check failed:", repr(error))
+    data_bytes = 0
+    data_valid = False
+    data_writable = False
+    try:
+        data_bytes = os.path.getsize(DATA_FILE) if os.path.isfile(DATA_FILE) else 0
+        if os.path.isfile(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as data_stream:
+                parsed_data = json.load(data_stream)
+            data_valid = isinstance(parsed_data, dict)
+        else:
+            data_valid = True  # The first save will create the file.
+        parent_dir = os.path.dirname(os.path.abspath(DATA_FILE)) or "."
+        data_writable = os.path.isdir(parent_dir) and os.access(parent_dir, os.W_OK)
+    except (OSError, ValueError, TypeError) as storage_error:
+        print("Health storage check failed:", repr(storage_error))
+    licensed = sum(1 for gid in DATA.get("group_licenses", {}) if is_group_licensed(gid))
+    body = (
+        f"🧪 <b>گزارش سلامت {BRAND} {VERSION}</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"📡 ارتباط API تلگرام: {'🟢 برقرار' if telegram_ok else '🔴 ناموفق؛ شبکه یا توکن را بررسی کن'}\n"
+        f"🤖 حساب ربات: <code>{esc(bot_label)}</code>\n"
+        f"⏱ زمان فعالیت: {esc(uptime_text)}\n"
+        f"💾 فایل داده: {'🟢 JSON معتبر' if data_valid else '🔴 نامعتبر/خوانده‌نشده'} ({data_bytes:,} بایت)\n"
+        f"✍️ دسترسی نوشتن پوشهٔ داده: {'🟢 مجاز' if data_writable else '🔴 بررسی شود'}\n"
+        f"🛡️ گروه‌های دارای مجوز فعال: {licensed}\n"
+        f"🧠 هوش مصنوعی: {'تنظیم شده' if AI_API_KEY else 'کلید تنظیم نشده؛ پاسخ محلی فعال است'}\n"
+        f"🎮 صفحهٔ بازی: {'آدرس HTTPS پیدا شد' if get_game_url() else 'WEB_GAME_URL را در هاست تنظیم کن'}\n"
+        "🔐 توکن و کلیدهای محرمانه در این گزارش نمایش داده نمی‌شوند."
+    )
+    bot.send_message(message.chat.id, body)
+
+
+@bot.message_handler(commands=["version"])
+def version_command(message):
+    bot.reply_to(message, f"🛡️ <b>{BRAND} {VERSION}</b>\nنسخهٔ تک‌فایلی پایتون؛ امکانات فعال به تنظیمات هاست و مجوزهای تلگرام وابسته‌اند.")
+
+
 @bot.message_handler(commands=["ping"])
 def ping_command(message):
     bot.reply_to(message, "🏓 MASIH GUARD فعاله و پیام رو دریافت کرد.")
@@ -1888,10 +2519,263 @@ def ai_command(message):
     try: bot.edit_message_text(esc(answer[:3900]),status.chat.id,status.message_id)
     except Exception: bot.send_message(message.chat.id,esc(answer[:3900]))
 
+@bot.message_handler(commands=["help", "commands"])
+def help_command(message):
+    if getattr(message.chat, "type", "private") in ("group", "supergroup"):
+        bot.reply_to(message,
+            "📚 <b>راهنمای سریع گروه | MASIH GUARD</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🧰 <b>عمومی:</b> «پنل»، «راهنما»، «قوانین»، «آمار»، «آیدی»، «پینگ»\n"
+            "👮 <b>مدیریت عضو:</b> روی پیام عضو ریپلای کن و سپس «اخطار»، «سکوت»، «رفع سکوت»، «بن»، «رفع بن» یا «اخراج» را بنویس.\n"
+            "🛡️ <b>امنیت:</b> «قفل لینک»، «قفل تبلیغ»، «ضد اسپم روشن»، «ضدتکرار روشن»، «قفل فوروارد» و فرمان‌های پشتیبانی‌شدهٔ مشابه.\n"
+            "📢 <b>جوین اجباری:</b> مدیر از پنل گروه، کانال‌های لازم را تنظیم می‌کند؛ عضو باید عضو همهٔ کانال‌ها شود و «بررسی عضویت» را بزند.\n"
+            "➕ <b>اد اجباری:</b> اگر روشن باشد، عضو با /mylink لینک اختصاصی می‌گیرد؛ فقط ورودهای ثبت‌شده با آن لینک شمرده می‌شوند.\n"
+            "🧠 برای پرسش، بنویس «ربات [سؤالت]». برای فهرست بیشتر بنویس «دستورات کامل».\n\n"
+            "🔒 فرمان مدیریتی فقط با مجوز مدیر گروه و دسترسی لازم ربات اجرا می‌شود؛ بعضی قابلیت‌ها به مجوز نصب وابسته‌اند.")
+    else:
+        bot.send_message(message.chat.id,
+            "📚 <b>راهنمای MASIH GUARD S1000+</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🚀 <b>فرمان‌های اصلی</b>\n"
+            "• <code>/start</code> — منوی اصلی و معرفی امکانات\n"
+            "• <code>/help</code> — همین راهنما\n"
+            "• <code>/profile</code> — پروفایل، موجودی و دعوت‌ها\n"
+            "• <code>/top</code> — جدول امتیازهای بازی\n"
+            "• <code>/game</code> — فهرست بازی‌های مرورگری\n"
+            "• <code>/stats</code> — آمار ربات یا گروه\n"
+            "• <code>/ai متن سؤال</code> — پرسش از دستیار\n"
+            "• <code>/ping</code> — بررسی پاسخ‌گویی\n"
+            "• <code>/health</code> یا <code>/diagnose</code> — گزارش سلامت (جزئیات فقط برای مالک)\n"
+            "• <code>/version</code> — نسخهٔ ربات\n"
+            "• <code>/id</code> — شناسهٔ کاربر و گفتگو\n"
+            "• <code>/cancel</code> — لغو عملیات در انتظار\n"
+            "• <code>/panel</code> — پنل مالک (فقط مالک اصلی) یا پنل گروه در گروه\n\n"
+            "💳 <b>منوی کاربری:</b> کیف پول، خرید اشتراک، زیرمجموعه‌گیری، تراکنش‌ها، درخواست برداشت، تیکت پشتیبانی و هوش مصنوعی.\n"
+            "👥 <b>در گروه:</b> «پنل»، «راهنما»، «قوانین»، «آمار»، «دستورات کامل» و فرمان‌های مدیریتی پشتیبانی‌شده.\n"
+            "📢 <b>جوین اجباری:</b> از پنل گروه کانال‌ها را تنظیم کن؛ عضویت هر کاربر با Telegram بررسی می‌شود.\n"
+            "➕ <b>اد اجباری:</b> تعداد دعوت را تنظیم کن؛ کاربران باید در گروه /mylink بزنند تا لینک شخصی بگیرند.\n"
+            "🔒 امکانات وابسته به مجوز نصب، تنظیمات سرویس و دسترسی‌های تلگرام هستند.",
+            reply_markup=public_keyboard())
+
+
+@bot.message_handler(commands=["profile", "me"])
+def profile_command(message):
+    user = getattr(message, "from_user", None)
+    if not user:
+        return
+    uid = int(user.id)
+    profile = ensure_user(uid, getattr(user, "username", ""), getattr(user, "first_name", ""))
+    referrals = sum(1 for row in DATA.setdefault("referrals", {}).values() if isinstance(row, dict) and int(row.get("referrer", 0) or 0) == uid)
+    points = int(DATA.setdefault("points", {}).get(str(uid), 0) or 0)
+    bot.send_message(message.chat.id,
+        "👤 <b>پروفایل شما</b>\n━━━━━━━━━━━━━━\n"
+        f"نام: {esc(getattr(user, 'first_name', '') or 'کاربر')}\n"
+        f"شناسه: <code>{uid}</code>\n"
+        f"⭐ امتیاز بازی: <b>{points}</b>\n"
+        f"👥 دعوت‌های ثبت‌شده: <b>{referrals}</b>\n"
+        f"💳 موجودی کیف پول: <b>{wallet(uid):,} تومان</b>\n"
+        f"📅 عضویت در ربات: {esc(profile.get('joined', 'ثبت نشده'))}")
+
+@bot.message_handler(commands=["top", "leaderboard"])
+def leaderboard_command(message):
+    points = DATA.setdefault("points", {})
+    rows = sorted(((int(uid), int(score or 0)) for uid, score in points.items()), key=lambda row: row[1], reverse=True)[:10]
+    if not rows or not any(score for _, score in rows):
+        bot.send_message(message.chat.id, "🏆 هنوز امتیازی ثبت نشده؛ با نوشتن «بازی» یا /game شروع کن.")
+        return
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for index, (uid, score) in enumerate(rows, 1):
+        user = DATA.setdefault("users", {}).get(str(uid), {})
+        name = (user.get("first_name") or user.get("username") or f"کاربر {uid}") if isinstance(user, dict) else f"کاربر {uid}"
+        icon = medals[index-1] if index <= 3 else f"{index}."
+        lines.append(f"{icon} {esc(name)} — <b>{score}</b> امتیاز")
+    bot.send_message(message.chat.id, "🏆 <b>جدول امتیازهای MASIH GUARD</b>\n━━━━━━━━━━━━━━\n" + "\n".join(lines))
+
+@bot.message_handler(commands=["panel"])
+def panel_command(message):
+    uid = int(getattr(getattr(message, "from_user", None), "id", 0) or 0)
+    chat_type = getattr(getattr(message, "chat", None), "type", "private")
+    if chat_type in ("group", "supergroup"):
+        send_group_panel(message.chat.id, user_id=uid)
+        return
+    if not is_owner(uid):
+        bot.send_message(uid, "⛔ پنل مدیریت مالک فقط برای مالک اصلی ربات در دسترس است.")
+        return
+    send_panel(uid, user_id=uid)
+
+@bot.message_handler(commands=["stats"])
+def stats_command(message):
+    if getattr(message.chat, "type", "private") in ("group", "supergroup"):
+        gs = DATA.setdefault("group_stats", {}).get(str(message.chat.id), {})
+        active = len(DATA.setdefault("active_members", {}).get(str(message.chat.id), {}))
+        bot.reply_to(message, f"📊 <b>آمار گروه</b>\nپیام‌ها: {int(gs.get('messages', 0))}\nپیام‌های مسدودشده: {int(gs.get('blocked', 0))}\nورودها: {int(gs.get('joins', 0))}\nخروج‌ها: {int(gs.get('leaves', 0))}\nکاربران دیده‌شده: {active}")
+    else:
+        bot.send_message(message.chat.id, stats_text())
+
+@bot.message_handler(commands=["cancel"])
+def cancel_command(message):
+    uid = int(getattr(getattr(message, "from_user", None), "id", 0) or 0)
+    pending = WAITING.pop(uid, None)
+    GAMES.pop(uid, None)
+    if pending:
+        bot.reply_to(message, "✅ عملیات در انتظار لغو شد.")
+    else:
+        bot.reply_to(message, "ℹ️ عملیات فعالی برای لغو وجود نداشت.")
+
+@bot.message_handler(commands=["game", "games"])
+def game_command(message):
+    game_url = get_game_url()
+    if game_url.startswith("https://"):
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🎮 باز کردن فهرست ۵۰ بازی", url=game_url))
+        bot.reply_to(message, "🎮 <b>MASIH GUARD ARCADE</b>\nفهرست بازی‌ها و کارت‌های تصویری در مرورگر باز می‌شود.\nبرای بازی متنی داخل تلگرام، کلمهٔ «بازی» را بدون اسلش بفرست.", reply_markup=kb)
+    else:
+        bot.reply_to(message, "⚠️ آدرس صفحهٔ بازی هنوز تنظیم نشده است. در هاست، WEB_GAME_URL را روی آدرس HTTPS سرویس وب ربات به‌همراه /game قرار بده؛ نمونه: https://your-service.onrender.com/game")
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     try:
         data=call.data or ""; uid=call.from_user.id; chat_id=call.message.chat.id if call.message else uid
+        if data.startswith("forcejoin:check:"):
+            parts = data.split(":")
+            if len(parts) != 4:
+                bot.answer_callback_query(call.id, "دکمه نامعتبر است.", show_alert=True); return
+            try:
+                target_chat, target_user = int(parts[2]), int(parts[3])
+            except ValueError:
+                bot.answer_callback_query(call.id, "دکمه نامعتبر است.", show_alert=True); return
+            if int(uid) != target_user:
+                bot.answer_callback_query(call.id, "این دکمه برای عضو دیگری است.", show_alert=True); return
+            missing = force_join_missing(target_chat, target_user, force_refresh=True)
+            if missing:
+                bot.answer_callback_query(call.id, "هنوز عضویت همه کانال‌ها تأیید نشده؛ اگر عضو شدی چند ثانیه بعد دوباره بزن.", show_alert=True)
+                try:
+                    bot.edit_message_reply_markup(target_chat, call.message.message_id, reply_markup=force_join_markup(target_chat, target_user, missing))
+                except Exception:
+                    pass
+            else:
+                bot.answer_callback_query(call.id, "عضویت تأیید شد؛ حالا می‌توانی پیام بدهی.")
+                try:
+                    bot.edit_message_text("✅ عضویت شما تأیید شد. حالا می‌توانی در گروه پیام بدهی.", target_chat, call.message.message_id, reply_markup=None)
+                except Exception:
+                    pass
+            return
+        if data.startswith("captcha:"):
+            if not call.message or call.message.chat.type not in ("group", "supergroup"):
+                bot.answer_callback_query(call.id, "این تأیید فقط داخل گروه انجام می‌شود.", show_alert=True); return
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                bot.answer_callback_query(call.id, "درخواست کپچا نامعتبر است.", show_alert=True); return
+            try: target_uid, chosen = int(parts[1]), int(parts[2])
+            except ValueError:
+                bot.answer_callback_query(call.id, "درخواست کپچا نامعتبر است.", show_alert=True); return
+            if int(call.from_user.id) != target_uid:
+                bot.answer_callback_query(call.id, "این دکمه برای عضو دیگری است.", show_alert=True); return
+            captcha_key = f"{call.message.chat.id}:{target_uid}"
+            record = DATA.setdefault("captchas", {}).get(captcha_key)
+            if not record:
+                bot.answer_callback_query(call.id, "کپچای فعالی برای این عضو ثبت نشده است؛ از مدیر بخواه وضعیت ورودت را بررسی کند.", show_alert=True); return
+            if float(record.get("expires", 0)) < time.time():
+                a, b = random.randint(2, 9), random.randint(1, 9)
+                answer = a + b
+                options = list({answer, answer + random.choice([1, 2]), max(0, answer - random.choice([1, 2]))})
+                while len(options) < 3: options.append(answer + len(options) + 2)
+                random.shuffle(options)
+                DATA.setdefault("captchas", {})[captcha_key] = {"answer": answer, "expires": time.time() + 300, "created": now_text()}
+                save_data()
+                kb = types.InlineKeyboardMarkup(row_width=3)
+                kb.row(*[types.InlineKeyboardButton(str(value), callback_data=f"captcha:{target_uid}:{value}") for value in options])
+                bot.answer_callback_query(call.id, "زمان قبلی تمام شد؛ سؤال جدید آماده شد.", show_alert=True)
+                try: bot.edit_message_text(f"🔐 <b>تأیید ورود</b>\nبرای ادامه، جواب را انتخاب کن: <b>{a} + {b} = ؟</b>\n⏳ اعتبار: ۵ دقیقه", call.message.chat.id, call.message.message_id, reply_markup=kb)
+                except Exception: pass
+                return
+            if chosen != int(record.get("answer", -999)):
+                bot.answer_callback_query(call.id, "جواب درست نیست؛ دوباره تلاش کن.", show_alert=True); return
+            try:
+                chat = bot.get_chat(call.message.chat.id)
+                defaults = getattr(chat, "permissions", None)
+                fields = ("can_send_messages", "can_send_audios", "can_send_documents", "can_send_photos", "can_send_videos", "can_send_video_notes", "can_send_voice_notes", "can_send_polls", "can_send_other_messages", "can_add_web_page_previews")
+                permissions = {field: (getattr(defaults, field, None) is not False) for field in fields}
+                bot.restrict_chat_member(call.message.chat.id, target_uid, permissions=types.ChatPermissions(**permissions))
+                DATA.setdefault("captchas", {}).pop(captcha_key, None); save_data()
+                bot.answer_callback_query(call.id, "تأیید شد؛ خوش آمدی!")
+                try: bot.edit_message_text("✅ <b>تأیید انجام شد</b> — عضو می‌تواند طبق مجوزهای پیش‌فرض گروه پیام بدهد.", call.message.chat.id, call.message.message_id, reply_markup=None)
+                except Exception: pass
+            except Exception as captcha_error:
+                print("Captcha unrestrict error:", repr(captcha_error))
+                bot.answer_callback_query(call.id, "تأیید انجام شد اما رفع محدودیت ناموفق بود؛ مدیر باید مجوز ربات را بررسی کند.", show_alert=True)
+            return
+        if data.startswith("gpanel:"):
+            if not call.message or call.message.chat.type not in ("group", "supergroup"):
+                bot.answer_callback_query(call.id, "این پنل فقط داخل گروه کار می‌کند.", show_alert=True)
+                return
+            if data == "gpanel:locked":
+                bot.answer_callback_query(call.id, "🔒 این دکمه برای مشاهده‌گرها قفل است؛ مدیر گروه می‌تواند از آن استفاده کند.", show_alert=True)
+                return
+            if data == "gpanel:rules":
+                bot.answer_callback_query(call.id)
+                bot.send_message(chat_id, "📜 <b>قوانین گروه</b>\n" + esc(get_group_settings(chat_id).get("rules", "قوانینی ثبت نشده است.")))
+                return
+            if data == "gpanel:stats":
+                bot.answer_callback_query(call.id)
+                gs = DATA.setdefault("group_stats", {}).get(str(chat_id), {})
+                active = len(DATA.setdefault("active_members", {}).get(str(chat_id), {}))
+                bot.send_message(chat_id, f"📊 <b>آمار گروه</b>\nپیام‌ها: {int(gs.get('messages', 0))}\nموارد مسدودشده: {int(gs.get('blocked', 0))}\nورودها: {int(gs.get('joins', 0))}\nخروج‌ها: {int(gs.get('leaves', 0))}\nکاربران دیده‌شده: {active}")
+                return
+            if data == "gpanel:help":
+                bot.answer_callback_query(call.id)
+                bot.send_message(chat_id, "📚 <b>راهنمای پنل MASIH GUARD</b>\nاعضا می‌توانند قوانین، آمار و راهنما را ببینند. دکمه‌های قفل‌شده فقط برای مدیران گروه فعال می‌شوند. برای تغییر تنظیمات، ربات باید مدیر گروه و دارای مجوزهای لازم باشد.\nبرای پرسش از دستیار بنویس: <code>ربات [سؤالت]</code> یا روی پیام ربات پاسخ بده.")
+                return
+            if data == "gpanel:games":
+                bot.answer_callback_query(call.id)
+                game_url = get_game_url()
+                if game_url.startswith("https://"):
+                    game_kb = types.InlineKeyboardMarkup()
+                    game_kb.add(types.InlineKeyboardButton("🎮 باز کردن بازی‌ها", url=game_url))
+                    bot.send_message(chat_id, "🎮 <b>MASIH GUARD ARCADE</b>", reply_markup=game_kb)
+                else:
+                    bot.send_message(chat_id, "⚠️ آدرس بازی هنوز در هاست تنظیم نشده است.")
+                return
+            if data == "gpanel:refresh":
+                bot.answer_callback_query(call.id)
+                send_group_panel(chat_id, call.message.message_id, user_id=uid)
+                return
+            if not is_group_admin(chat_id, uid):
+                bot.answer_callback_query(call.id, "⛔ فقط مدیر گروه یا مالک اجازه تغییر تنظیمات دارد.", show_alert=True)
+                return
+            if data in {"gpanel:configure_force_join", "gpanel:configure_force_add"}:
+                action = "force_join" if data.endswith("force_join") else "force_add"
+                WAITING[uid] = {"action": action, "chat_id": int(chat_id)}
+                prompt = ("هر کانال را در یک خط بفرست: @channel | https://t.me/channel | نام نمایشی. حداکثر ۱۰ کانال؛ برای خاموش‌کردن بنویس خاموش."
+                          if action == "force_join" else
+                          "تعداد دعوت معتبر لازم را از ۱ تا ۱۰۰ بفرست. اعضا باید در گروه /mylink بزنند؛ برای خاموش‌کردن بنویس خاموش.")
+                bot.answer_callback_query(call.id, "ادامه تنظیم در پیام خصوصی")
+                try:
+                    bot.send_message(uid, "⚙️ تنظیمات گروه " + str(chat_id) + "\n" + prompt)
+                except Exception:
+                    bot.send_message(chat_id, "برای ادامهٔ تنظیمات، ابتدا ربات را در خصوصی باز کن و /start بزن.", reply_to_message_id=call.message.message_id)
+                return
+            if data.startswith("gpanel:toggle:"):
+                key = data.split(":", 2)[2]
+                allowed = {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "anti_forward", "welcome_on", "farewell_on", "media_lock", "phone_filter", "captcha_on", "anti_raid_on", "join_approval", "lock_mentions", "lock_hashtags", "lock_usernames", "lock_photos", "lock_videos", "lock_files", "lock_stickers", "lock_voice", "lock_video_notes", "smart_security"}
+                if key not in allowed:
+                    bot.answer_callback_query(call.id, "تنظیم نامعتبر است.", show_alert=True)
+                    return
+                settings = get_group_settings(chat_id)
+                next_enabled = not bool(settings.get(key, False))
+                required_permission = "can_delete_messages" if key in {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "anti_forward", "media_lock", "phone_filter", "lock_mentions", "lock_hashtags", "lock_usernames", "lock_photos", "lock_videos", "lock_files", "lock_stickers", "lock_voice", "lock_video_notes"} else (
+                    "can_restrict_members" if key in {"captcha_on", "anti_raid_on"} else
+                    "can_invite_users" if key == "join_approval" else "")
+                if next_enabled and required_permission and not bot_has_group_permission(chat_id, required_permission):
+                    friendly = {"can_delete_messages": "حذف پیام‌ها", "can_restrict_members": "محدودکردن اعضا", "can_invite_users": "دعوت کاربران/مدیریت درخواست ورود"}.get(required_permission, required_permission)
+                    bot.answer_callback_query(call.id, f"برای فعال‌کردن این قابلیت، ربات باید مجوز «{friendly}» داشته باشد.", show_alert=True)
+                    return
+                settings[key] = next_enabled
+                save_data()
+                bot.answer_callback_query(call.id, "روشن شد." if settings[key] else "خاموش شد.")
+                send_group_panel(chat_id, call.message.message_id, user_id=uid)
+                return
         management_action = data.startswith(("panel:", "toggle:", "ask:", "show:"))
         if management_action:
             if not call.message or call.message.chat.type != "private" or call.message.chat.id != uid:
@@ -2016,7 +2900,7 @@ def callback_handler(call):
             if not is_owner(uid):
                 bot.answer_callback_query(call.id,"⛔ این پنل مخصوص مالک رباته!",show_alert=True); return
             action=data.split(":",1)[1]
-            global_actions={"public_features","channel_url","website_url","referral_reward_toman","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","announcement","group_stats","group_settings","search_logs","register_bot_admin","remove_bot_admin"}
+            global_actions={"public_features","channel_url","website_url","referral_reward_toman","subscription_packages","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","announcement","group_stats","group_settings","search_logs","register_bot_admin","remove_bot_admin"}
             if action in global_actions:
                 WAITING[uid]={"action":action}
                 prompts={
@@ -2024,6 +2908,7 @@ def callback_handler(call):
                     "channel_url":"لینک کامل کانال با https:// را بفرست.",
                     "website_url":"لینک کامل وب‌سایت با https:// را بفرست.",
                     "referral_reward_toman":"مبلغ پاداش هر دعوت معتبر را به تومان وارد کن (پیش‌فرض ۵۰۰۰).",
+                    "subscription_packages":"بسته‌ها را به شکل روز:قیمت وارد کن؛ مثال: 30:40000,60:80000,90:120000 . این فهرست جایگزین بسته‌های قبلی می‌شود.",
                     "wallet_adjust":"قالب: شناسه کاربر | مبلغ (+برای افزایش و -برای کاهش) | دلیل تغییر",
                     "add_whitelist":"شناسه گروه | شناسه کاربر را بفرست.",
                     "remove_whitelist":"شناسه گروه | شناسه کاربر را بفرست.",
@@ -2040,12 +2925,12 @@ def callback_handler(call):
                     "remove_bot_admin":"نام کاربری ادمینی را که می‌خواهی دسترسی‌اش حذف شود با @ بفرست؛ نمونه: @username"
                 }
                 bot.answer_callback_query(call.id); bot.send_message(uid,prompts[action]); return
-            group_actions={"welcome_text","farewell_text","rules","auto_reply","delete_reply","bad_word","warn_limit","whitelist","add_custom_command","delete_custom_command","quiet_hours","welcome_image","welcome_delete_seconds"}
+            group_actions={"welcome_text","farewell_text","rules","auto_reply","delete_reply","bad_word","warn_limit","whitelist","add_custom_command","delete_custom_command","add_note","delete_note","quiet_hours","welcome_image","welcome_delete_seconds","force_join","force_add"}
             if action in group_actions:
                 WAITING[uid]={"action":"select_group_for_action","next_action":action}
                 bot.answer_callback_query(call.id); bot.send_message(uid,"🆔 شناسه گروه را بفرست (معمولاً با -100 شروع می‌شود). سپس مقدار تنظیم را می‌پرسم."); return
             WAITING[uid]={"action":action,"chat_id":chat_id}
-            prompts={"welcome_text":"متن خوشامد را بفرست؛ {name} نام کاربر را جایگزین می‌کند.","farewell_text":"متن خداحافظی را بفرست؛ {name} نام کاربر را جایگزین می‌کند.","rules":"قوانین جدید را بفرست.","auto_reply":"قالب: کلمه کلیدی | متن پاسخ","delete_reply":"کلمه کلیدی پاسخ خودکار را بفرست.","bad_word":"کلمه ممنوع را بفرست.","warn":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","mute":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","unmute":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","ban":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","unban":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","kick":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","font":"متن را بفرست.","add_proxy":"لینک t.me/proxy یا tg://proxy را بفرست.","delete_proxy":"شماره پروکسی را بفرست.","add_customer":"قالب: شناسه | نام | توضیحات","find_customer":"شناسه مشتری را بفرست.","ticket":"متن تیکت را بفرست.","ai":"سؤال خود را بفرست.","warn_limit":"سقف اخطار بین ۱ تا ۲۰ را بفرست.", "add_whitelist":"شناسه گروه | شناسه کاربر را بفرست.", "remove_whitelist":"شناسه گروه | شناسه کاربر را بفرست.", "member_info":"شناسه گروه | شناسه کاربر را بفرست.", "clear_warnings":"شناسه گروه | شناسه کاربر را بفرست.", "activate_group":"ربات را مدیر گروه کن؛ سپس داخل همان گروه بنویس: فعال سازی ۳۰ روز (عدد ۰ یعنی دائمی).", "extend_group":"شناسه گروه | تعداد روز را بفرست.", "revoke_group":"شناسه گروه را بفرست.", "add_custom_command":"قالب: نام فرمان بدون ! | متن پاسخ","delete_custom_command":"نام فرمان را بفرست.", "announcement":"شناسه گروه | متن اطلاعیه را بفرست.", "group_stats":"شناسه گروه را بفرست (مثلاً -1001234567890).", "group_settings":"شناسه گروه را بفرست (مثلاً -1001234567890).", "search_logs":"عبارت یا شناسه‌ای برای جست‌وجو در گزارش‌ها بفرست.", "quiet_hours":"بازهٔ سکوت را به شکل 23:00-07:00 بفرست؛ برای خاموش‌کردن بنویس خاموش.", "welcome_image":"لینک مستقیم تصویر (https://...) را بفرست؛ برای حذف تصویر بنویس حذف.", "welcome_delete_seconds":"زمان حذف خوشامد به ثانیه (۰ تا ۳۶۰۰) را بفرست."}
+            prompts={"welcome_text":"متن خوشامد را بفرست؛ {name} نام کاربر را جایگزین می‌کند.","farewell_text":"متن خداحافظی را بفرست؛ {name} نام کاربر را جایگزین می‌کند.","add_note":"قالب یادداشت: نام کوتاه | متن یادداشت. در گروه با #نام یادداشت نمایش داده می‌شود.","delete_note":"نام یادداشتی را که می‌خواهی حذف شود بفرست.","rules":"قوانین جدید را بفرست.","auto_reply":"قالب: کلمه کلیدی | متن پاسخ","delete_reply":"کلمه کلیدی پاسخ خودکار را بفرست.","bad_word":"کلمه ممنوع را بفرست.","warn":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","mute":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","unmute":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","ban":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","unban":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","kick":"شناسه کاربر یا گروه | شناسه کاربر را بفرست.","font":"متن را بفرست.","add_proxy":"لینک t.me/proxy یا tg://proxy را بفرست.","delete_proxy":"شماره پروکسی را بفرست.","add_customer":"قالب: شناسه | نام | توضیحات","find_customer":"شناسه مشتری را بفرست.","ticket":"متن تیکت را بفرست.","ai":"سؤال خود را بفرست.","warn_limit":"سقف اخطار بین ۱ تا ۲۰ را بفرست.", "add_whitelist":"شناسه گروه | شناسه کاربر را بفرست.", "remove_whitelist":"شناسه گروه | شناسه کاربر را بفرست.", "member_info":"شناسه گروه | شناسه کاربر را بفرست.", "clear_warnings":"شناسه گروه | شناسه کاربر را بفرست.", "activate_group":"ربات را مدیر گروه کن؛ سپس داخل همان گروه بنویس: فعال سازی ۳۰ روز (عدد ۰ یعنی دائمی).", "extend_group":"شناسه گروه | تعداد روز را بفرست.", "revoke_group":"شناسه گروه را بفرست.", "add_custom_command":"قالب: نام فرمان بدون ! | متن پاسخ","delete_custom_command":"نام فرمان را بفرست.", "announcement":"شناسه گروه | متن اطلاعیه را بفرست.", "group_stats":"شناسه گروه را بفرست (مثلاً -1001234567890).", "group_settings":"شناسه گروه را بفرست (مثلاً -1001234567890).", "search_logs":"عبارت یا شناسه‌ای برای جست‌وجو در گزارش‌ها بفرست.", "quiet_hours":"بازهٔ سکوت را به شکل 23:00-07:00 بفرست؛ برای خاموش‌کردن بنویس خاموش.", "welcome_image":"لینک مستقیم تصویر (https://...) را بفرست؛ برای حذف تصویر بنویس حذف.", "welcome_delete_seconds":"زمان حذف خوشامد به ثانیه (۰ تا ۳۶۰۰) را بفرست."}
             bot.answer_callback_query(call.id); bot.send_message(uid,prompts.get(action,"اطلاعات موردنیاز را بفرست.")); return
         if data.startswith("show:"):
             if not is_owner(uid):
@@ -2058,6 +2943,10 @@ def callback_handler(call):
             if action == "rules":
                 WAITING[uid]={"action":"show_rules_group"}
                 bot.answer_callback_query(call.id); bot.send_message(uid,"شناسه گروه را بفرست تا قوانین همان گروه نمایش داده شود.")
+                return
+            if action == "notes":
+                WAITING[uid]={"action":"show_notes_group"}
+                bot.answer_callback_query(call.id); bot.send_message(uid,"شناسه گروه را بفرست تا یادداشت‌های همان گروه نمایش داده شوند.")
                 return
             if action == "bot_admins":
                 admins = DATA.setdefault("bot_admins", {})
@@ -2136,11 +3025,26 @@ def private_text_handler(message):
         WAITING[uid] = {"action":"public_font_text"}
         bot.send_message(uid, "🔤 متن یا اسم دلخواهت رو بفرست تا ۲۰۰ مدل فونت فانتزی و جیگول میگول بسازم.")
         return
-    if compact in {"بازی", "یهبازی", "یهبازی", "game", "play"}:
+    if compact in {"بازی", "یهبازی", "بازیها", "بازی ها", "game", "play"}:
         key=f"private:{uid}"; idx=GAME_CYCLES.get(key,0)%10
-        games=["🏀 بازی اول: بسکتبال!\nتوپ رو تصور کن؛ از ۱ تا ۵ یه عدد انتخاب کن و بفرست.", "⚽ بازی دوم: فوتبال!\nیه عدد از ۱ تا ۵ بفرست تا نتیجه رو ببینی.", "🧩 بازی سوم: معمای کوتاه!\nکدوم عدد بین ۱ تا ۵ رو انتخاب می‌کنی؟", "🎯 بازی چهارم: هدف‌گیری!\nیه عدد از ۱ تا ۵ بفرست.", "🪨 بازی پنجم: سنگ‌کاغذ‌قیچی!\nبنویس سنگ، کاغذ یا قیچی.", "🧠 بازی ششم: حدس عدد!\nیه عدد از ۱ تا ۱۰ بفرست.", "🎲 بازی هفتم: تاس شانسی!\nیه عدد از ۱ تا ۶ انتخاب کن.", "🧮 بازی هشتم: حساب سریع!\nحاصل ۷+۸ چنده؟", "🔤 بازی نهم: کلمه‌سازی!\nبا حرف «م» یه کلمه بگو.", "🏁 بازی دهم: چالش سرعت!\nاز ۱ تا ۱۰ یه عدد انتخاب کن."]
+        prompts=[
+            ("🏀 بازی ۱/۱۰ — بسکتبال", "برای پرتاب توپ، عددی از ۱ تا ۵ حدس بزن.", "number", 5),
+            ("⚽ بازی ۲/۱۰ — پنالتی فوتبال", "جهت دروازه‌بان را حدس بزن: ۱، ۲ یا ۳.", "number", 3),
+            ("🧩 بازی ۳/۱۰ — معما", "چی همیشه دنبالت می‌آید ولی در تاریکی ناپدید می‌شود؟ جواب را بنویس.", "riddle", "سایه"),
+            ("🎯 بازی ۴/۱۰ — هدف‌گیری", "عدد هدف از ۱ تا ۵ را حدس بزن.", "number", 5),
+            ("✊ بازی ۵/۱۰ — سنگ‌کاغذ‌قیچی", "یکی را بنویس: سنگ، کاغذ یا قیچی.", "rps", None),
+            ("🧠 بازی ۶/۱۰ — حدس عدد", "عدد مخفی بین ۱ تا ۱۰ را حدس بزن.", "number", 10),
+            ("🎲 بازی ۷/۱۰ — تاس", "حدس بزن تاس چه عددی می‌آورد (۱ تا ۶).", "number", 6),
+            ("🧮 بازی ۸/۱۰ — حساب سریع", "حاصل ۷ + ۸ چند می‌شود؟", "math", 15),
+            ("🔤 بازی ۹/۱۰ — کلمه‌سازی", "یک کلمهٔ فارسی که با «م» شروع می‌شود بفرست.", "word", "م"),
+            ("🏁 بازی ۱۰/۱۰ — چالش عددی", "یک عدد از ۱ تا ۱۰ حدس بزن.", "number", 10),
+        ]
+        title,prompt,kind,arg=prompts[idx]
+        answer = random.randint(1,arg) if kind=="number" else (random.choice(["سنگ","کاغذ","قیچی"]) if kind=="rps" else arg)
+        GAMES[uid]={"kind":kind,"answer":answer,"title":title}
+        WAITING[uid]={"action":"game:round","chat_id":uid}
         GAME_CYCLES[key]=idx+1
-        bot.send_message(uid, games[idx]); return
+        bot.send_message(uid, f"{title}\n{prompt}\n\nپاسخت را بفرست."); return
     if normalized_private in {"هوش", "هوش مصنوعی", "دستیار", "دستیار هوشمند"}:
         bot.send_message(uid, "🧠 دستیار آماده است. درخواستت رو بعد از «هوش» بنویس؛ مثلاً «هوش این متن رو خلاصه کن» یا «هوش راهنمای قفل لینک رو بگو».")
         return
@@ -2170,7 +3074,6 @@ def private_text_handler(message):
         try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
         except Exception: bot.send_message(uid, esc(answer[:3900]), reply_to_message_id=message.message_id)
         return
-    # Removed public proxy and font tools from this build.
     public_shortcuts = {
         "کیف پول": "user:wallet", "موجودی": "user:wallet", "wallet": "user:wallet",
         "خرید اشتراک": "user:shop", "اشتراک": "user:shop", "shop": "user:shop",
@@ -2188,8 +3091,8 @@ def private_text_handler(message):
     if not pending: return
     action=pending.get("action",""); chat_id=pending.get("chat_id",uid)
     owner_only={"add_proxy","delete_proxy","add_customer","find_customer","delete_reply","bad_word","warn_limit","toggle_group_setting","select_group_for_action",
-                "public_features","channel_url","website_url","referral_reward_toman","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","add_custom_command","delete_custom_command","announcement","group_stats","group_settings","search_logs",
-                "welcome_text","farewell_text","rules","auto_reply","quiet_hours","welcome_image","welcome_delete_seconds","warn","mute","unmute","ban","unban","kick","show_list_group","show_rules_group","register_bot_admin","remove_bot_admin"}
+                "public_features","channel_url","website_url","referral_reward_toman","subscription_packages","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","add_custom_command","delete_custom_command","announcement","group_stats","group_settings","search_logs",
+                "welcome_text","farewell_text","rules","auto_reply","add_note","delete_note","quiet_hours","welcome_image","welcome_delete_seconds","warn","mute","unmute","ban","unban","kick","show_list_group","show_rules_group","show_notes_group","register_bot_admin","remove_bot_admin"}
     if action in owner_only and not is_owner(uid):
         WAITING.pop(uid,None); bot.send_message(uid,"⛔ این عملیات فقط برای مالک است."); return
     try:
@@ -2240,7 +3143,7 @@ def private_text_handler(message):
             try: bot.send_message(int(found_id), "ℹ️ دسترسی ادمین فروش ربات توسط مالک اصلی حذف شد.")
             except Exception: pass
             return
-        if action in {"public_features","channel_url","website_url","referral_reward_toman"}:
+        if action in {"public_features","channel_url","website_url","referral_reward_toman","subscription_packages"}:
             cfg = bot_settings()
             if action == "public_features":
                 if text.casefold() in {"پیش‌فرض", "default", "بازنشانی"}:
@@ -2256,10 +3159,26 @@ def private_text_handler(message):
                 cfg[action] = text
                 message_text = "✅ لینک ذخیره شد."
             elif action == "referral_reward_toman":
-                value = int(text)
+                value = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")))
                 if not 0 <= value <= 1000000: raise ValueError("مبلغ باید بین ۰ تا ۱٬۰۰۰٬۰۰۰ تومان باشد.")
                 cfg["referral_reward_toman"] = value
                 message_text = f"✅ پاداش دعوت روی {value:,} تومان تنظیم شد."
+            elif action == "subscription_packages":
+                normalized = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+                parsed = []
+                for item in normalized.split(","):
+                    pair = item.strip().split(":")
+                    if len(pair) != 2: raise ValueError("قالب درست: 30:40000,60:80000,90:120000")
+                    days, price = int(pair[0].strip()), int(pair[1].strip())
+                    if not 1 <= days <= 3650 or not 0 <= price <= 2_000_000_000:
+                        raise ValueError("مدت باید ۱ تا ۳۶۵۰ روز و قیمت ۰ تا ۲٬۰۰۰٬۰۰۰٬۰۰۰ تومان باشد.")
+                    if any(existing[0] == days for existing in parsed):
+                        raise ValueError("مدت هر بسته باید یکتا باشد؛ یک مدت را دوبار ننویس.")
+                    parsed.append([days, price])
+                    if len(parsed) > 10: raise ValueError("حداکثر ۱۰ بسته می‌توانی ثبت کنی.")
+                if not parsed: raise ValueError("حداقل یک بسته لازم است.")
+                cfg["subscription_packages"] = parsed
+                message_text = "✅ بسته‌های اشتراک ذخیره شدند: " + "، ".join(f"{days} روز / {price:,} تومان" for days, price in parsed)
             save_data(); add_log("bot_setting_updated", "", uid, action)
             WAITING.pop(uid, None)
             bot.send_message(uid, message_text)
@@ -2269,6 +3188,13 @@ def private_text_handler(message):
             if target >= 0: raise ValueError("شناسه گروه باید منفی باشد.")
             if not is_group_licensed(target): raise PermissionError("این گروه مجوز فعال ندارد.")
             bot.send_message(uid,"📜 <b>قوانین گروه</b>\n"+esc(get_group_settings(target).get("rules","قوانینی ثبت نشده است.")))
+            WAITING.pop(uid,None); return
+        if action=="show_notes_group":
+            target=int(text)
+            if target >= 0: raise ValueError("شناسه گروه باید منفی باشد.")
+            notes=get_group_settings(target).get("notes", {})
+            body="\n\n".join(f"<b>#{esc(k)}</b>\n{esc(v)}" for k,v in notes.items())
+            bot.send_message(uid,"📝 <b>یادداشت‌های گروه</b>\n"+(body or "یادداشتی ثبت نشده است."))
             WAITING.pop(uid,None); return
         if action == "payout_amount":
             amount = int(text)
@@ -2307,7 +3233,7 @@ def private_text_handler(message):
             if target>=0: raise ValueError("شناسه گروه باید منفی باشد.")
             next_action=pending.get("next_action","")
             WAITING[uid]={"action":next_action,"chat_id":target}
-            prompts={"welcome_text":"متن خوشامد را بفرست؛ می‌توانی {name} بگذاری.","farewell_text":"متن خداحافظی را بفرست.","rules":"قوانین جدید را بفرست.","auto_reply":"قالب: کلمه کلیدی | متن پاسخ","delete_reply":"کلمه کلیدی را بفرست.","bad_word":"کلمه ممنوع را بفرست.","warn_limit":"سقف اخطار ۱ تا ۲۰ را بفرست.","whitelist":"شناسه گروه را بفرست تا فهرست کاربران مجاز نمایش داده شود.","add_custom_command":"قالب: نام فرمان بدون ! | متن پاسخ","delete_custom_command":"نام فرمان را بفرست.", "quiet_hours":"بازهٔ سکوت را به شکل 23:00-07:00 بفرست؛ برای خاموش‌کردن بنویس خاموش.", "welcome_image":"لینک مستقیم تصویر (https://...) را بفرست؛ برای حذف تصویر بنویس حذف.", "welcome_delete_seconds":"زمان حذف پیام خوشامد را به ثانیه بفرست (۰ یعنی حذف خودکار خاموش؛ حداکثر ۳۶۰۰)."}
+            prompts={"welcome_text":"متن خوشامد را بفرست؛ می‌توانی {name} بگذاری.","farewell_text":"متن خداحافظی را بفرست.","rules":"قوانین جدید را بفرست.","auto_reply":"قالب: کلمه کلیدی | متن پاسخ","delete_reply":"کلمه کلیدی را بفرست.","bad_word":"کلمه ممنوع را بفرست.","warn_limit":"سقف اخطار ۱ تا ۲۰ را بفرست.","whitelist":"شناسه گروه را بفرست تا فهرست کاربران مجاز نمایش داده شود.","add_custom_command":"قالب: نام فرمان بدون ! | متن پاسخ","delete_custom_command":"نام فرمان را بفرست.","add_note":"قالب: نام کوتاه | متن یادداشت","delete_note":"نام یادداشت را بفرست.", "quiet_hours":"بازهٔ سکوت را به شکل 23:00-07:00 بفرست؛ برای خاموش‌کردن بنویس خاموش.", "welcome_image":"لینک مستقیم تصویر (https://...) را بفرست؛ برای حذف تصویر بنویس حذف.", "welcome_delete_seconds":"زمان حذف پیام خوشامد را به ثانیه بفرست (۰ یعنی حذف خودکار خاموش؛ حداکثر ۳۶۰۰).", "force_join":"هر کانال را در یک خط بفرست: @channel | https://t.me/channel | نام نمایشی. برای خاموش‌کردن بنویس خاموش.", "force_add":"تعداد دعوت معتبر لازم را از ۱ تا ۱۰۰ بفرست. برای خاموش‌کردن بنویس خاموش؛ اعضا باید با لینک /mylink دعوت شوند."}
             bot.send_message(uid,"✅ گروه انتخاب شد.\n"+prompts.get(next_action,"مقدار تنظیم را بفرست.")); return
         if action=="whitelist":
             target=int(text)
@@ -2320,7 +3246,7 @@ def private_text_handler(message):
             if target >= 0: raise ValueError("شناسه گروه باید منفی باشد.")
             cfg=get_group_settings(target)
             lines=[f"🆔 شناسه گروه: <code>{target}</code>",f"🛡 مجوز نصب: {'فعال' if is_group_licensed(target) else 'غیرفعال'}"]
-            labels={"anti_link":"ضد لینک","anti_ads":"ضد تبلیغ","anti_spam":"ضد اسپم","anti_repeat":"ضد تکرار","anti_forward":"ضد فوروارد","media_lock":"قفل رسانه","lock_mentions":"قفل تگ/منشن","lock_hashtags":"قفل هشتگ","lock_usernames":"قفل نام‌کاربری","smart_security":"امنیت هوشمند گروه","welcome_on":"خوشامدگویی","farewell_on":"خداحافظی","quiet_hours_on":"سکوت شبانه"}
+            labels={"anti_link":"ضد لینک","anti_ads":"ضد تبلیغ","anti_spam":"ضد اسپم","anti_repeat":"ضد تکرار","anti_raid_on":"ضد یورش ورود","captcha_on":"کپچا","anti_forward":"ضد فوروارد","media_lock":"قفل رسانه","lock_mentions":"قفل تگ/منشن","lock_hashtags":"قفل هشتگ","lock_usernames":"قفل نام‌کاربری","smart_security":"امنیت هوشمند گروه","welcome_on":"خوشامدگویی","farewell_on":"خداحافظی","quiet_hours_on":"سکوت شبانه"}
             for key,label in labels.items(): lines.append(f"{label}: {'روشن' if cfg.get(key,False) else 'خاموش'}")
             lines.append(f"قوانین: {esc(cfg.get('rules',''))[:500]}")
             bot.send_message(uid,"⚙️ <b>شناسه و تنظیمات گروه</b>\n"+"\n".join(lines))
@@ -2342,6 +3268,61 @@ def private_text_handler(message):
             active=len(DATA.setdefault("active_members",{}).get(str(target),{}))
             bot.send_message(uid, f"📊 <b>آمار گروه</b> <code>{target}</code>\nپیام‌ها: {int(gs.get('messages',0))}\nمسدودشده‌ها: {int(gs.get('blocked',0))}\nورودها: {int(gs.get('joins',0))}\nخروج‌ها: {int(gs.get('leaves',0))}\nکاربران دیده‌شده: {active}")
             WAITING.pop(uid,None); return
+        if action=="force_join":
+            if not is_group_admin(chat_id, uid):
+                raise PermissionError("فقط مدیر همان گروه می‌تواند جوین اجباری را تغییر دهد.")
+            cfg = get_group_settings(chat_id)
+            if text.casefold() in {"خاموش", "off", "0"}:
+                cfg["force_join_on"] = False
+                for cache_key in list(FORCE_JOIN_CACHE):
+                    if cache_key[0] == int(chat_id): FORCE_JOIN_CACHE.pop(cache_key, None)
+                save_data(); add_log("force_join_disabled", chat_id, uid, "جوین اجباری خاموش شد")
+                bot.send_message(uid, "✅ جوین اجباری برای این گروه خاموش شد.")
+            else:
+                if not bot_has_group_permission(chat_id, "can_delete_messages"):
+                    raise PermissionError("برای اجرای جوین اجباری، ربات باید در گروه مجوز حذف پیام‌ها داشته باشد.")
+                rows = []
+                for line in text.splitlines():
+                    if not line.strip():
+                        continue
+                    parts = [x.strip() for x in line.split("|", 2)]
+                    if len(parts) < 2:
+                        raise ValueError("قالب هر خط: @channel | https://t.me/channel | نام نمایشی")
+                    ident, url = parts[0], parts[1]
+                    title = parts[2] if len(parts) == 3 and parts[2] else ident
+                    if not ident or not url.startswith(("https://t.me/", "http://t.me/")):
+                        raise ValueError("شناسه کانال و لینک معتبر t.me لازم است.")
+                    rows.append({"id": ident, "url": url, "title": title[:80]})
+                    if len(rows) > 10:
+                        raise ValueError("حداکثر ۱۰ کانال می‌توانی تنظیم کنی.")
+                if not rows:
+                    raise ValueError("حداقل یک کانال لازم است.")
+                cfg["force_join_channels"] = rows
+                cfg["force_join_on"] = True
+                for cache_key in list(FORCE_JOIN_CACHE):
+                    if cache_key[0] == int(chat_id): FORCE_JOIN_CACHE.pop(cache_key, None)
+                save_data(); add_log("force_join_configured", chat_id, uid, f"channels={len(rows)}")
+                bot.send_message(uid, "✅ جوین اجباری فعال شد. برای بررسی قابل‌اعتماد، ربات باید در همهٔ کانال‌های تنظیم‌شده مدیر باشد؛ برای کانال خصوصی، شناسهٔ عددی و لینک دعوت معتبر لازم است.\nکانال‌ها:\n" + "\n".join("• " + esc(r["title"]) for r in rows))
+            WAITING.pop(uid, None); return
+        if action=="force_add":
+            if not is_group_admin(chat_id, uid):
+                raise PermissionError("فقط مدیر همان گروه می‌تواند اد اجباری را تغییر دهد.")
+            cfg = get_group_settings(chat_id)
+            if text.casefold() in {"خاموش", "off", "0"}:
+                cfg["force_add_on"] = False
+                save_data(); add_log("force_add_disabled", chat_id, uid, "اد اجباری خاموش شد")
+                bot.send_message(uid, "✅ اد اجباری برای این گروه خاموش شد.")
+            else:
+                if not bot_has_group_permission(chat_id, "can_delete_messages"):
+                    raise PermissionError("برای اجرای اد اجباری، ربات باید در گروه مجوز حذف پیام‌ها داشته باشد.")
+                count = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")))
+                if not 1 <= count <= 100:
+                    raise ValueError("تعداد باید بین ۱ تا ۱۰۰ باشد.")
+                cfg["force_add_count"] = count
+                cfg["force_add_on"] = True
+                save_data(); add_log("force_add_configured", chat_id, uid, f"required={count}")
+                bot.send_message(uid, f"✅ اد اجباری فعال شد: دعوت {count} عضو معتبر لازم است. کاربران باید در گروه /mylink بزنند و عضو جدید با لینک اختصاصی آن‌ها وارد شود. تلگرام دعوت‌های بدون لینک اختصاصی را قابل انتساب قطعی نمی‌کند.")
+            WAITING.pop(uid, None); return
         if action=="quiet_hours":
             s=get_group_settings(chat_id)
             if text.casefold() in {"خاموش","off","0"}:
@@ -2375,7 +3356,15 @@ def private_text_handler(message):
             if target>=0: raise ValueError("شناسه گروه باید منفی باشد.")
             setting=pending.get("setting",""); s=get_group_settings(target)
             if not isinstance(s.get(setting),bool): raise ValueError("این تنظیم قابل تغییر نیست.")
-            s[setting]=not s[setting]; save_data(); add_log("setting_toggled",target,uid,f"{setting}={s[setting]}")
+            next_enabled = not bool(s[setting])
+            deletion_filters = {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "anti_forward", "media_lock", "lock_photos", "lock_videos", "lock_files", "lock_stickers", "lock_voice", "lock_video_notes", "phone_filter", "lock_mentions", "lock_hashtags", "lock_usernames"}
+            required_permission = "can_delete_messages" if setting in deletion_filters else (
+                "can_restrict_members" if setting in {"captcha_on", "anti_raid_on"} else
+                "can_invite_users" if setting == "join_approval" else "")
+            if next_enabled and required_permission and not bot_has_group_permission(target, required_permission):
+                friendly = {"can_delete_messages": "حذف پیام‌ها", "can_restrict_members": "محدودکردن اعضا", "can_invite_users": "دعوت کاربران/مدیریت درخواست ورود"}.get(required_permission, required_permission)
+                raise PermissionError(f"برای فعال‌کردن این قابلیت، ربات باید مدیر گروه با مجوز «{friendly}» باشد.")
+            s[setting]=next_enabled; save_data(); add_log("setting_toggled",target,uid,f"{setting}={s[setting]}")
             label={"smart_security":"امنیت هوشمند گروه","anti_link":"ضد لینک","anti_ads":"ضد تبلیغ","anti_spam":"ضد اسپم","anti_repeat":"ضد پیام تکراری","anti_forward":"ضد فوروارد","media_lock":"قفل رسانه","lock_mentions":"قفل تگ/منشن","lock_hashtags":"قفل هشتگ","lock_usernames":"قفل نام‌کاربری","phone_filter":"فیلتر شماره تماس","lock_photos":"قفل عکس","lock_videos":"قفل فیلم","lock_files":"قفل فایل","lock_stickers":"قفل استیکر و گیف","lock_voice":"قفل پیام صوتی","lock_video_notes":"قفل ویدئوی گرد","welcome_on":"خوشامدگویی","farewell_on":"پیام خداحافظی","join_approval":"تأیید ورود"}.get(setting,setting)
             bot.send_message(uid,f"✅ {label} برای گروه <code>{target}</code>: {'روشن' if s[setting] else 'خاموش'}")
         elif action in ("activate_group", "extend_group", "revoke_group"):
@@ -2476,18 +3465,30 @@ def private_text_handler(message):
             label="" if text.casefold() in {"بدون اسم","ندارد","نه"} else text[:50]
             heading=(f"✨ <b>{esc(label)}</b>\n━━━━━━━━━━━━━━\n" if label else "🔤 <b>۲۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n")
             variants=font_variants(raw)
-            for start in range(0, 100, 10):
+            for start in range(0, 200, 10):
                 lines=[]
                 for idx,(name,value) in enumerate(variants[start:start+10], start=start+1):
                     lines.append(f"<b>{idx}. {esc(name)}</b>\n<code>{esc(value)}</code>")
                 bot.send_message(uid, (heading if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,200)})</b>\n━━━━━━━━━━━━━━\n") + "\n\n".join(lines))
         elif action in ("public_font","font"):
             variants=font_variants(text[:120])
-            for start in range(0,100,10):
+            for start in range(0,200,10):
                 lines=[f"<b>{idx}. {esc(name)}</b>\n<code>{esc(value)}</code>" for idx,(name,value) in enumerate(variants[start:start+10],start=start+1)]
                 bot.send_message(uid, ("🔤 <b>۲۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n" if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,200)})</b>\n━━━━━━━━━━━━━━\n")+"\n\n".join(lines))
         elif action in ("welcome_text","farewell_text","rules"):
             s=get_group_settings(chat_id); s[action]=text[:3000]; save_data(); bot.send_message(uid,"✅ ذخیره شد.")
+        elif action=="add_note":
+            if "|" not in text: raise ValueError("قالب: نام کوتاه | متن یادداشت")
+            name, body = [part.strip() for part in text.split("|", 1)]
+            name = re.sub(r"[^\w\u0600-\u06ff-]", "", name.replace("#", "")).strip().lower()[:40]
+            if not name or not body: raise ValueError("نام و متن یادداشت نباید خالی باشد.")
+            notes = get_group_settings(chat_id).setdefault("notes", {})
+            notes[name] = body[:3000]; save_data(); bot.send_message(uid, f"✅ یادداشت #{esc(name)} ذخیره شد. در گروه با #{esc(name)} فراخوانی می‌شود.")
+        elif action=="delete_note":
+            name = re.sub(r"[^\w\u0600-\u06ff-]", "", text.replace("#", "")).strip().lower()[:40]
+            notes = get_group_settings(chat_id).setdefault("notes", {})
+            removed = notes.pop(name, None); save_data()
+            bot.send_message(uid, "🗑 یادداشت حذف شد." if removed is not None else "این یادداشت پیدا نشد.")
         elif action=="auto_reply":
             if "|" not in text: bot.send_message(uid,"قالب: کلمه کلیدی | متن پاسخ"); return
             keyword,reply=[p.strip() for p in text.split("|",1)]
@@ -2542,15 +3543,34 @@ def private_text_handler(message):
             answer=ask_ai(text)
             try: bot.edit_message_text(esc(answer[:3900]),uid,status.message_id)
             except Exception: bot.send_message(uid,esc(answer[:3900]))
-        elif action=="game:guess":
-            guess=int(text)
-            if not 1<=guess<=5: raise ValueError("عدد باید بین ۱ تا ۵ باشد.")
-            answer=GAMES.get(uid)
-            if answer is None: raise ValueError("بازی فعالی نیست.")
-            if guess==answer:
+        elif action in {"game:guess", "game:round"}:
+            game=GAMES.get(uid)
+            if game is None: raise ValueError("بازی فعالی نیست؛ دوباره بنویس «بازی».")
+            kind=game.get("kind", "number") if isinstance(game,dict) else "number"
+            answer=game.get("answer") if isinstance(game,dict) else game
+            won=False; detail=""
+            if kind=="number":
+                guess=int(text); maximum=int(answer)
+                if not 1<=guess<=maximum: raise ValueError(f"عدد باید بین ۱ تا {maximum} باشد.")
+                won=guess==answer; detail=f"عدد درست {answer} بود."
+            elif kind=="riddle":
+                won="سایه" in text.replace("‌", " ").strip(); detail="جواب معما «سایه» بود."
+            elif kind=="rps":
+                guess=text.strip()
+                if guess not in {"سنگ","کاغذ","قیچی"}: raise ValueError("فقط سنگ، کاغذ یا قیچی بنویس.")
+                bot_choice=answer
+                won=guess==bot_choice or (guess,bot_choice) in {("سنگ","قیچی"),("قیچی","کاغذ"),("کاغذ","سنگ")}
+                detail=f"انتخاب ربات: {bot_choice}."
+            elif kind=="math":
+                try: won=int(text)==int(answer)
+                except ValueError: won=False
+                detail=f"جواب درست {answer} بود."
+            elif kind=="word":
+                won=text.strip().startswith("م") and len(text.strip())>1; detail="باید یک کلمه با حرف «م» می‌فرستادی."
+            if won:
                 DATA["points"][str(uid)]=DATA["points"].get(str(uid),0)+1; save_data()
-                bot.send_message(uid,f"🎉 درست بود! عدد {answer} بود؛ یک امتیاز گرفتی.")
-            else: bot.send_message(uid,f"این بار نه؛ عدد درست {answer} بود.")
+                bot.send_message(uid,f"🎉 آفرین! این دور را بردی و یک امتیاز گرفتی.\n{detail}")
+            else: bot.send_message(uid,f"🙂 این دور را نبردی. {detail}")
             GAMES.pop(uid,None)
         elif action.startswith("show_"): handle_show(uid,action[5:])
         else:
@@ -2567,10 +3587,143 @@ def private_text_handler(message):
 bot.message_handler(content_types=["text"], func=lambda m: getattr(getattr(m, "chat", None), "type", "") in ("group", "supergroup"))(group_message_handler)
 
 
+# ---------------- Embedded browser game (kept in this single main.py file) ----------------
+GAME_HTML = r"""<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#07101f"><title>MASIH GUARD • Arcade</title>
+<style>
+:root{color-scheme:dark;--a:#57e2d0;--b:#ffbc68;--panel:#101d2bea;--line:#294657}*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:14px;background:radial-gradient(ellipse at top,#193d52,#08111f 55%,#050912);color:#f4f8ff;font:16px Tahoma,Arial,sans-serif}.wrap{max-width:760px;margin:auto}.brand{color:var(--a);font-weight:bold;margin:8px 2px 14px;letter-spacing:.4px}.hero,.panel{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:16px;box-shadow:0 14px 38px #0006}.topline{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}.tag,.stat{background:#203748;border:1px solid #36596b;padding:8px 11px;border-radius:12px;font-size:13px}.hero h1{font-size:25px;margin:12px 0 7px}.muted{color:#a8bdcc;font-size:13px;line-height:1.8}.stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.panel{margin-top:13px}.stage{min-height:300px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:13px;text-align:center}.stageTitle{font-size:21px;font-weight:bold;color:var(--b)}.field{width:100%;max-width:320px;padding:13px;border-radius:12px;background:#07121f;color:white;border:1px solid #3a6579;font:inherit;text-align:center}.btn{border:1px solid #3a6579;background:linear-gradient(135deg,#24475c,#172d41);color:white;padding:12px 15px;border-radius:13px;font:inherit;cursor:pointer;touch-action:manipulation;min-height:44px}.btn:active{transform:scale(.98)}.primary{background:linear-gradient(135deg,#12a99a,#176a87);font-weight:bold}.buttons{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;width:100%}.result{min-height:26px;color:#7ff0ce;font-weight:bold;line-height:1.8}.board{display:grid;grid-template-columns:repeat(3,minmax(65px,95px));gap:7px}.cell{height:72px;font-size:26px;padding:4px}.big{font-size:46px}.bar{width:min(100%,340px);height:12px;border-radius:20px;background:#07121f;overflow:hidden;border:1px solid #36596b}.bar span{display:block;height:100%;width:0;background:linear-gradient(90deg,#12a99a,#ffbc68)}.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}.game-card{display:flex;flex-direction:column;align-items:center;gap:7px;min-height:128px;padding:13px 9px;border-radius:17px;border:1px solid #315365;background:linear-gradient(145deg,#17364a,#101c2c);color:#f4f8ff;font:inherit;cursor:pointer;text-align:center;touch-action:manipulation}.game-card:hover,.game-card:focus-visible{border-color:var(--a);outline:2px solid #57e2d055;transform:translateY(-1px)}.game-art{width:58px;height:58px;display:grid;place-items:center;border-radius:16px;font-size:31px;background:radial-gradient(circle at 30% 25%,#32647b,#102335 72%);border:1px solid #3b6479;box-shadow:inset 0 0 18px #57e2d022}.game-card strong{font-size:13px;line-height:1.5}.game-card small{font-size:11px;color:#a8bdcc;line-height:1.5}.gallery-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.gallery-head h2{font-size:18px;margin:0 0 12px}.footer{margin:14px;text-align:center;color:#7f97aa;font-size:12px}@media(max-width:430px){body{padding:9px}.hero,.panel{padding:12px}.hero h1{font-size:22px}.stage{min-height:270px}.cell{height:65px}}
+</style></head><body><div class="wrap"><div class="brand">Masih Hackring <span class="muted">| MASIH GUARD ARCADE</span></div>
+<section class="hero"><div class="topline"><span class="tag">🎮 بازی تصادفی</span><span class="tag" id="gameNum">بازی ۱ از ۵۰</span></div><h1 id="title">در حال آماده‌سازی…</h1><div class="muted" id="desc">یک بازی کوتاه و سرگرم‌کننده؛ آماده‌ای؟</div><div class="stats"><span class="stat">⭐ امتیاز این دور: <b id="score">0</b></span><span class="stat">🏆 بهترین دور: <b id="best">0</b></span></div></section>
+<section class="panel"><div class="stage" id="stage"></div><div class="result" id="result" aria-live="polite"></div><div class="buttons"><button class="btn primary" id="again">🔄 بازی تصادفی دیگر</button><button class="btn" id="reset">↻ شروع دوباره همین بازی</button></div></section>
+<section class="panel"><div class="gallery-head"><h2>🕹️ فهرست ۵۰ بازی</h2><span class="muted">برای شروع، روی کارت بازی بزن</span></div><div id="gallery" class="gallery"></div></section>
+<div class="footer">MASIH GUARD • بازی‌های مرورگری سازگار با موبایل • امتیازها محلی هستند</div></div>
+<script>
+const $=id=>document.getElementById(id),stage=$("stage");
+const catalog=[
+["🏀 پرتاب بسکتبال","پرتاب موفق به سمت حلقه",basket],["⚽ ضربه پنالتی","گوشه دروازه را انتخاب کن",penalty],["🧠 حدس عدد","عدد مخفی را پیدا کن",guess],["✊ سنگ کاغذ قیچی","با ربات رقابت کن",rps],["⚡ سرعت واکنش","پس از سبز شدن سریع بزن",reaction],
+["🎯 هدف‌گیری","هدف‌ها را بزن",target],["🧮 چالش ریاضی","جواب مسئله را پیدا کن",mathgame],["🪙 شیر یا خط","سمت سکه را حدس بزن",coin],["🎲 تاس شانس","تاس بینداز",dice],["🟦 حافظه رنگ‌ها","ترتیب را حفظ کن",memory],
+["⭕ دوز","با ربات بازی کن",tic],["🔤 حدس واژه","واژه را پیدا کن",word],["🎨 رنگ درست","رنگ خواسته‌شده را بزن",color],["👆 چالش کلیک","تا پایان زمان کلیک کن",clicker],["🧱 برج‌سازی","بلوک‌ها را روی هم بگذار",tower],
+["🐍 مار امتیازی","جهت حرکت را انتخاب کن",snake],["🫧 حباب‌شکن","حباب‌ها را بترکان",bubbles],["🚦 چراغ سبز","فقط در زمان مناسب بزن",traffic],["🔢 دنباله اعداد","عدد بعدی را پیدا کن",sequence],["🧩 جفت‌یابی","کارت‌های مشابه را پیدا کن",pairs],
+["🧊 یخ‌شکن","بلوک‌ها را انتخاب کن",ice],["🚀 پرواز فضایی","از شهاب‌سنگ‌ها دوری کن",space],["🛡️ سپر دفاعی","سمت امن را انتخاب کن",shield],["🍉 برش میوه","میوه‌ها را لمس کن",fruit],["🏓 پینگ‌پنگ","سمت توپ را حدس بزن",ping],
+["🌀 پیچ‌وخم","راه درست را پیدا کن",maze],["📦 مرتب‌سازی","عددها را مرتب کن",sortgame],["🧠 حافظه عددی","عدد را به خاطر بسپار",numbermemory],["🔔 زنگ طلایی","زنگ درست را پیدا کن",bell],["🪄 جادوی انتخاب","انتخاب پنهان را حدس بزن",magic],
+["🌈 رنگین‌کمان","رنگ‌ها را به ترتیب بزن",rainbow],["🪜 صعود","هر بار یک پله بالا برو",climb],["🪨 سنگ‌چین","سنگ‌ها را متعادل کن",stones],["🧭 قطب‌نما","جهت را پیدا کن",compass],["🎈 بادکنک‌زن","بادکنک‌ها را بزن",balloon],
+["🧲 آهنربا","شیء درست را انتخاب کن",magnet],["🧩 پازل ساده","قطعه گمشده را پیدا کن",puzzle],["🎵 ریتم‌زن","الگو را تکرار کن",rhythm],["🔐 رمزگشا","رمز سه‌رقمی را حدس بزن",codegame],["🧺 سبدگیری","شیء را در سبد بینداز",basketcatch],
+["🐾 ردپا","ردپا را دنبال کن",tracks],["🌙 شب و روز","حالت درست را انتخاب کن",daynight],["🛸 یوفو","مسیر امن را انتخاب کن",ufo],["🪁 بادبادک","باد مناسب را پیدا کن",kite],["💎 جواهرات","جواهر یکسان را انتخاب کن",gem],
+["🧯 نجات شعله","قطره آب را انتخاب کن",water],["🧱 دیوارشکن","آجر هدف را بزن",brick],["🪙 شکار سکه","سکه‌ها را جمع کن",coins],["🧠 درست یا غلط","درستی جمله را مشخص کن",truefalse],["🏁 مسابقه سرعت","در زمان کوتاه امتیاز بگیر",speed]
+];
+let current=-1,score=0,best=0,timers=[],state={};
+try{best=Number(localStorage.getItem("masih_guard_arcade_best")||0)||0}catch(e){}
+$("best").textContent=best;
+function say(s){$("result").textContent=s}function add(n=1){score+=n;$("score").textContent=score;if(score>best){best=score;$("best").textContent=best;try{localStorage.setItem("masih_guard_arcade_best",String(best))}catch(e){}}}
+function txt(s,cls=""){let e=document.createElement("div");e.textContent=s;if(cls)e.className=cls;stage.appendChild(e);return e}
+function btn(s,fn,cls="btn"){let b=document.createElement("button");b.className=cls;b.textContent=s;b.onclick=fn;stage.appendChild(b);return b}
+function inp(ph="پاسخ را وارد کن"){let e=document.createElement("input");e.className="field";e.placeholder=ph;e.autocomplete="off";stage.appendChild(e);return e}
+function opts(arr,fn){let d=document.createElement("div");d.className="buttons";stage.appendChild(d);arr.forEach((s,i)=>{let b=document.createElement("button");b.className="btn";b.textContent=s;b.onclick=()=>fn(i,s);d.appendChild(b)})}
+function later(fn,ms){let t=setTimeout(fn,ms);timers.push(t)}
+function renderGallery(){const gallery=$("gallery");if(!gallery)return;catalog.forEach((item,index)=>{const card=document.createElement("button");card.type="button";card.className="game-card";card.setAttribute("aria-label","شروع بازی "+item[0]);const art=document.createElement("span");art.className="game-art";art.textContent=(item[0].match(/^\S+/)||["🎮"])[0];const title=document.createElement("strong");title.textContent=item[0].replace(/^\S+\s*/,"");const desc=document.createElement("small");desc.textContent=item[1];card.append(art,title,desc);card.addEventListener("click",()=>{start(index,true);window.scrollTo({top:0,behavior:"smooth"})});gallery.appendChild(card)})}
+function clean(){timers.forEach(clearTimeout);timers=[];stage.innerHTML="";say("");score=0;$("score").textContent="0";state={}}
+function start(exclude=current,exact=false){clean();let n;if(exact&&Number.isInteger(exclude)&&exclude>=0&&exclude<catalog.length){n=exclude}else{do{n=Math.floor(Math.random()*catalog.length)}while(catalog.length>1&&n===exclude)}current=n;$("title").textContent=catalog[n][0];$("desc").textContent=catalog[n][1];$("gameNum").textContent="بازی "+(n+1)+" از "+catalog.length;try{catalog[n][2]()}catch(e){stage.innerHTML="";txt("مشکلی در این دور پیش آمد.");btn("شروع دوباره",()=>start(current,true));say("یک دور تازه امتحان کن.")}}
+function basket(){txt("🏀","big");btn("پرتاب توپ",()=>{if(Math.random()>.42){add(10);say("گل شد! +۱۰ امتیاز")}else say("این بار گل نشد؛ دوباره تلاش کن")},"btn primary")}
+function penalty(){txt("🥅 دروازه","big");opts(["چپ","وسط","راست"],i=>{if(Math.random()>.38){add(5);say("گل! +۵ امتیاز")}else say("دروازه‌بان توپ را گرفت!")})}
+function guess(){let a=1+Math.floor(Math.random()*20);txt("یک عدد بین ۱ تا ۲۰");let i=inp("عدد");btn("بررسی",()=>{let v=+i.value;if(!Number.isInteger(v)||v<1||v>20)return say("عدد بین ۱ تا ۲۰ وارد کن");if(v===a){add(5);say("درست حدس زدی! +۵")}else say(v<a?"بالاتر برو ⬆️":"پایین‌تر برو ⬇️")})}
+function rps(){opts(["✊ سنگ","✋ کاغذ","✌️ قیچی"],i=>{let c=Math.floor(Math.random()*3),names=["سنگ","کاغذ","قیچی"];if(i===c)say("مساوی شد؛ دوباره انتخاب کن");else if((i-c+3)%3===1){add(3);say("بردی! +۳")}else say("این دور ربات برد؛ دوباره تلاش کن")})}
+function reaction(){let b=btn("⏳ صبر کن تا سبز شود",()=>say("زود زدی! بازی را دوباره شروع کن"));b.disabled=true;later(()=>{b.disabled=false;b.textContent="🟢 همین حالا بزن";let t=Date.now();b.onclick=()=>{add(5);say("واکنش تو "+(Date.now()-t)+" میلی‌ثانیه بود! +۵");b.disabled=true}},1000+Math.random()*2200)}
+function target(){for(let i=0;i<8;i++)btn("🎯 هدف "+(i+1),()=>{add(1);say("+۱ امتیاز؛ هدف بعدی را بزن")})}
+function mathgame(){let a=2+Math.floor(Math.random()*18),b=1+Math.floor(Math.random()*12),ans=a+b;txt(a+" + "+b+" = ؟");let i=inp("جواب");btn("ثبت",()=>+i.value===ans?(add(3),say("درست است! +۳")):say("دوباره حساب کن"))}
+function coin(){opts(["🦁 شیر","🌿 خط"],i=>{if(i===(Math.random()<.5?0:1)){add(2);say("درست حدس زدی! +۲")}else say("این بار درست نشد")})}
+function dice(){btn("🎲 تاس بینداز",()=>{let n=1+Math.floor(Math.random()*6);txt("🎲 "+n);add(n);say("+"+n+" امتیاز")})}
+function memory(){let a=Array.from({length:3},()=>Math.floor(Math.random()*4)),em=["🟥","🟦","🟩","🟨"];txt(a.map(x=>em[x]).join("  "));later(()=>{stage.innerHTML="";opts(em,(i)=>{state.p=state.p||[];state.p.push(i);if(state.p.length===3){if(state.p.every((v,j)=>v===a[j])){add(5);say("حافظه عالی! +۵")}else say("ترتیب درست نبود")}})},1300)}
+function tic(){let b=Array(9).fill(""),done=false;let g=document.createElement("div");g.className="board";stage.appendChild(g);function win(s){return [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]].some(a=>a.every(i=>b[i]===s))}function draw(){g.innerHTML="";b.forEach((v,i)=>{let e=document.createElement("button");e.className="btn cell";e.textContent=v||"·";e.onclick=()=>{if(done||b[i])return;b[i]="❌";if(win("❌")){done=true;add(5);say("بردی! +۵")}else{let empty=b.map((x,j)=>x?null:j).filter(x=>x!==null);if(empty.length){let j=empty[Math.floor(Math.random()*empty.length)];b[j]="⭕";if(win("⭕")){done=true;say("ربات این دور را برد")}}else{done=true;say("مساوی شد")}}draw()};g.appendChild(e)})}draw()}
+function word(){let w=["سیاره","ربات","بازی","کدنویس"][Math.floor(Math.random()*4)];txt("واژهٔ مخفی را پیدا کن");let i=inp("حدس واژه");btn("بررسی",()=>i.value.trim()===w?(add(4),say("درست است! +۴")):say("این واژه نبود؛ دوباره امتحان کن"))}
+function color(){let a=[["قرمز","🟥"],["آبی","🟦"],["سبز","🟩"],["زرد","🟨"]],n=Math.floor(Math.random()*4);txt("این رنگ را انتخاب کن: "+a[n][1]);opts(a.map(x=>x[0]),i=>i===n?(add(2),say("آفرین! +۲")):say("رنگ دیگری را انتخاب کن"))}
+function clicker(){let n=0,b=btn("بزن! ۰",()=>{n++;b.textContent="بزن! "+n});later(()=>{b.disabled=true;add(n);say("تعداد کلیک: "+n+" • امتیاز +"+n)},5000)}
+function tower(){let n=0;btn("🧱 گذاشتن بلوک",()=>{n++;txt("🧱".repeat(Math.min(n,10)));add(1);say("ارتفاع برج: "+n)})}
+function snake(){txt("🐍 مسیر مار","big");opts(["⬅️ چپ","⬆️ بالا","⬇️ پایین","➡️ راست"],i=>{add(1);say("حرکت انجام شد! +۱")})}
+function bubbles(){opts(["🫧","🫧","🫧","🫧","🫧","🫧"],()=>{add(1);say("حباب ترکید! +۱")})}
+function traffic(){let green=false,b=btn("🔴 صبر کن",()=>green?(add(3),say("به‌موقع زدی! +۳")):say("چراغ قرمز است؛ صبر کن"));later(()=>{green=true;b.textContent="🟢 بزن"},1200+Math.random()*1800)}
+function sequence(){let a=2+Math.floor(Math.random()*5),d=2+Math.floor(Math.random()*5),ans=a+3*d;txt([a,a+d,a+2*d,"؟"].join("  •  "));let i=inp("عدد بعدی");btn("بررسی",()=>+i.value===ans?(add(3),say("درست! +۳")):say("جواب درست: "+ans))}
+function pairs(){let a=["🍎","🚀","⚽","🍎","🚀","⚽"].sort(()=>Math.random()-.5),first=null,lock=false;a.forEach(x=>{let b=btn("❔",()=>{if(lock||b.textContent===x)return;b.textContent=x;if(!first)first={x,b};else if(first.x===x){add(2);say("جفت پیدا شد! +۲");first=null}else{let old=first;first=null;lock=true;later(()=>{b.textContent="❔";old.b.textContent="❔";lock=false},650)}})})}
+function simple(title,items,award=2){txt(title);opts(items,(i)=>{if(Math.random()>.35){add(award);say("موفق شدی! +"+award)}else say("این بار نشد؛ دوباره تلاش کن")})}
+function ice(){simple("کدام بلوک یخی را می‌شکنی؟",["🧊","❄️","🧊","❄️"])}
+function space(){simple("مسیر امن سفینه را انتخاب کن",["⬅️","⬆️","➡️","🛸"],3)}
+function shield(){simple("سپر را در کدام سمت بگذاری؟",["چپ","وسط","راست"])}
+function fruit(){simple("میوه‌ها را لمس کن",["🍉","🍊","🍎","🍇"],1)}
+function ping(){simple("توپ به کدام سمت می‌رود؟",["چپ","راست"],2)}
+function maze(){simple("مسیر خروج را پیدا کن",["راه A","راه B","راه C"])}
+function sortgame(){let a=[3,1,4,2],i=inp("اعداد را صعودی بنویس");txt("مرتب کن: "+a.join(" ، "));btn("بررسی",()=>i.value.replace(/\s/g,"")==="1234"?(add(4),say("مرتب شد! +۴")):say("ترتیب درست: 1234"))}
+function numbermemory(){let n=100+Math.floor(Math.random()*900);txt("این عدد را حفظ کن: "+n);let i=inp("عدد را وارد کن");later(()=>{stage.querySelectorAll("div")[0].textContent="حالا عدد را وارد کن"},1400);btn("بررسی",()=>+i.value===n?(add(4),say("حافظه عالی! +۴")):say("عدد درست: "+n))}
+function bell(){simple("زنگ درست را پیدا کن",["🔔","🛎️","🔕"],2)}
+function magic(){let n=Math.floor(Math.random()*3);simple("یکی از کارت‌ها شانس دارد",["🪄","✨","🌟"],3)}
+function rainbow(){let seq=["🟥","🟨","🟩"];txt(seq.join(" "));let i=inp("همین ترتیب را وارد کن");btn("بررسی",()=>i.value.replace(/\s/g,"")===seq.join("")?(add(4),say("رنگ‌ها درست‌اند! +۴")):say("ترتیب درست: "+seq.join(" ")))}
+function climb(){let n=0;btn("⬆️ یک پله بالا",()=>{n++;add(1);say("پلهٔ "+n+" • امتیاز +۱")})}
+function stones(){simple("سنگ متعادل را انتخاب کن",["🪨","🪨","💎"],2)}
+function compass(){simple("جهت شمال را پیدا کن",["⬆️ شمال","➡️ شرق","⬇️ جنوب","⬅️ غرب"],2)}
+function balloon(){opts(["🎈","🎈","🎈","🎈","🎈"],()=>{add(1);say("ترکید! +۱")})}
+function magnet(){simple("آهنربا کدام را جذب می‌کند؟",["🧲 فلز","🪵 چوب","🧻 کاغذ"],2)}
+function puzzle(){simple("قطعهٔ گمشده را انتخاب کن",["🧩","🔷","🔶"],2)}
+function rhythm(){let a=["👏","🥁","👏"];txt(a.join(" "));let i=inp("الگو را تکرار کن");btn("بررسی",()=>i.value.replace(/\s/g,"")===a.join("")?(add(4),say("ریتم عالی! +۴")):say("الگو: "+a.join(" ")))}
+function codegame(){let n=String(100+Math.floor(Math.random()*900));let i=inp("رمز سه‌رقمی");btn("بررسی",()=>i.value===n?(add(6),say("رمز باز شد! +۶")):say("رمز درست نبود؛ راهنمایی: "+[...n].filter((x,j)=>x===i.value[j]).length+" رقم در جای درست است"))}
+function basketcatch(){simple("شیء را به سبد بینداز",["🧺","🪣","📦"],2)}
+function tracks(){simple("ردپای درست را دنبال کن",["🐾","👣","🦶"],2)}
+function daynight(){simple("الان کدام نماد روز است؟",["☀️ روز","🌙 شب"],2)}
+function ufo(){simple("سفینه از کدام مسیر رد شود؟",["مسیر ۱","مسیر ۲","مسیر ۳"],2)}
+function kite(){simple("بادبادک با کدام باد بالا می‌رود؟",["🌬️ باد مناسب","🌧️ باران","🪨 سنگ"],2)}
+function gem(){simple("جواهر را پیدا کن",["💎","🪨","🍃"],2)}
+function water(){simple("برای خاموش کردن شعله چه می‌گیری؟",["💧 آب","🍂 برگ","🪵 چوب"],2)}
+function brick(){simple("آجر هدف را بزن",["🧱","🧱","🧱","🧱"],1)}
+function coins(){let n=0;btn("🪙 جمع کن",()=>{n++;add(1);say("سکه‌ها: "+n+" • +۱")})}
+function truefalse(){let q=[["خورشید یک ستاره است",true],["عدد ۲ از ۵ بزرگ‌تر است",false],["آب در دمای معمولی مایع است",true]][Math.floor(Math.random()*3)];txt(q[0]);opts(["درست ✅","غلط ❌"],i=>i===(q[1]?0:1)?(add(2),say("جواب درست! +۲")):say("این بار اشتباه بود"))}
+function speed(){let n=0,b=btn("شروع کن و سریع بزن",()=>{n++;b.textContent="امتیاز "+n});later(()=>{b.disabled=true;add(n);say("نتیجه: "+n+" • امتیاز +"+n)},4000)}
+$("again").onclick=()=>start(current,false);$("reset").onclick=()=>start(current,true);renderGallery();start(-1,false);
+</script></body></html>"""
+class _GameRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/healthz", "/health", "/ready"):
+            body = b"MASIH GUARD S1000+ is running"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path in ("/game", "/game/"):
+            body = GAME_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        body = b"Not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        return
+
+def start_game_web_server():
+    port = int(os.getenv("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), _GameRequestHandler)
+    thread = threading.Thread(target=server.serve_forever, name="game-web-server", daemon=True)
+    thread.start()
+    print(f"MASIH GUARD web server listening on port {port}")
+    return server
+
+
 if __name__ == "__main__":
-    print(f"{BRAND} {VERSION}: starting polling")
+    print(f"{BRAND} {VERSION}: starting web server and polling")
+    print("Configuration: BOT_TOKEN=set; AI=" + ("enabled" if AI_API_KEY else "not configured") + "; web game uses WEB_GAME_URL or RENDER_EXTERNAL_URL")
     try:
-        bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25)
+        start_game_web_server()
+    except Exception as web_error:
+        print("Web server could not start:", repr(web_error))
+    try:
+        bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25, allowed_updates=["message", "callback_query", "chat_member", "chat_join_request"])
     except Exception as e:
         print("Polling stopped:",repr(e))
         raise
