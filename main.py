@@ -1,4 +1,5 @@
 
+
 # -*- coding: utf-8 -*-
 """MASIH GUARD S1000+ — single-file Telegram group management bot."""
 import os, re, json, time, random, threading, io, urllib.request, urllib.error, html, socket
@@ -26,6 +27,7 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=4)
 LOCK = threading.RLock()
 WAITING, GAMES, PANEL_CURRENT, PANEL_HISTORY = {}, {}, {}, {}
+GAME_CYCLES = {}
 BOT_USERNAME = ""
 BOT_ID = 0
 
@@ -55,7 +57,7 @@ DEFAULT_DATA = {
     "users": {}, "referrals": {}, "subscriptions": {}, "transactions": {},
     "subscription_requests": {}, "payout_requests": {},
     "last_daily": {}, "group_licenses": {}, "join_requests": {}, "group_requests": {},
-    "group_stats": {}, "active_members": {}, "manager_roles": {}
+    "group_stats": {}, "active_members": {}, "manager_roles": {}, "bot_admins": {}
 }
 
 def clone(obj): return json.loads(json.dumps(obj, ensure_ascii=False))
@@ -83,6 +85,7 @@ def load_data():
     data.setdefault("group_stats", {})
     data.setdefault("active_members", {})
     data.setdefault("manager_roles", {})
+    data.setdefault("bot_admins", {})
     data.setdefault("subscription_requests", {})
     data.setdefault("payout_requests", {})
     # Migration away from the retired diamond economy. Old diamond balances and
@@ -123,6 +126,12 @@ def add_log(action, chat_id="", user_id="", detail=""):
         save_data()
 
 def is_owner(uid): return int(uid or 0) == OWNER_ID
+
+def is_bot_admin(uid):
+    """Delegated sales admins can activate group licenses, but never own the bot."""
+    if is_owner(uid):
+        return True
+    return str(int(uid or 0)) in DATA.setdefault("bot_admins", {})
 
 def ensure_user(uid, username="", first_name=""):
     key = str(int(uid))
@@ -258,7 +267,7 @@ SECTIONS = {
     "tickets":"🎫 تیکت پشتیبانی", "ai":"🧠 هوش مصنوعی",
     "backup":"💾 پشتیبان‌گیری", "daily":"📅 گزارش روزانه",
     "smart":"🧩 امنیت هوشمند", "status":"🚀 وضعیت ربات",
-    "bot_settings":"🎛️ تنظیمات عمومی ربات", "licenses":"🛡️ مجوز نصب گروه‌ها", "full_control":"🎛️ کنترل کامل ربات"
+    "bot_settings":"🎛️ تنظیمات عمومی ربات", "licenses":"🛡️ مجوز نصب گروه‌ها", "full_control":"🎛️ کنترل کامل ربات", "admins":"👮 مدیریت ادمین‌های ربات"
 }
 
 PUBLIC_FEATURES = (
@@ -349,6 +358,11 @@ def section_keyboard(section):
         ("🛂 تأیید ورود","toggle:join_approval"),("🌙 تنظیم ساعت سکوت","ask:quiet_hours"),
         ("⚙️ سقف اخطار","ask:warn_limit"),("📜 تنظیم قوانین","ask:rules"),
         ("🆔 نمایش تنظیمات یک گروه","ask:group_settings")
+      ],
+      "admins":[
+        ("➕ ثبت ادمین با @username","ask:register_bot_admin"),
+        ("➖ حذف ادمین با @username","ask:remove_bot_admin"),
+        ("📋 فهرست ادمین‌های ثبت‌شده","show:bot_admins")
       ],
       "bot_settings":[
         ("🎛️ کنترل کامل ربات (همه تنظیمات)","panel:full_control"),
@@ -493,10 +507,9 @@ EXTRA_FONT_WRAPPERS = [
 
 
 def font_variants(text):
+    """Return up to 200 distinct decorative styles; Persian is decorated rather than remapped."""
     variants=[]
     has_persian = bool(re.search(r"[\u0600-\u06ff]", text))
-    # Persian/Arabic letters have no broadly supported Unicode mathematical font alphabets.
-    # For Persian words, the first 18 styles therefore add distinct frames while Latin is mapped.
     for i, mapping in enumerate(FONT_MAPS):
         name = FONT_NAMES[i] if i < len(FONT_NAMES) else f"سبک {i+1}"
         converted = text.translate(mapping)
@@ -505,12 +518,32 @@ def font_variants(text):
             converted = wrapper.format(converted)
             name = f"{name} + {wrapper_name}"
         variants.append((name, converted))
-    for name, wrapper in FONT_WRAPPERS:
+    for name, wrapper in FONT_WRAPPERS + EXTRA_FONT_WRAPPERS:
         variants.append((name, wrapper.format(text)))
-    for name, wrapper in EXTRA_FONT_WRAPPERS:
-        variants.append((name, wrapper.format(text)))
-    # Exactly 100 outputs: Unicode Latin mappings plus decorative wrappers for Persian.
-    return variants[:100]
+    # Build 100 additional combinations so there are actually 200 results, not just a label.
+    outer = ["✦ {} ✦", "꧁ {} ꧂", "『 {} 』", "【 {} 】", "༺ {} ༻", "⚡ {} ⚡", "𓆩 {} 𓆪", "♛ {} ♛", "彡 {} 彡", "★彡 {} 彡★"]
+    inner = ["♡ {} ♡", "✧ {} ✧", "☾ {} ☽", "◇ {} ◇", "༒ {} ༒", "❀ {} ❀", "➳ {} ➳", "♜ {} ♜", "▰ {} ▰", "∞ {} ∞"]
+    for oi, outer_fmt in enumerate(outer):
+        for ii, inner_fmt in enumerate(inner):
+            styled = outer_fmt.format(inner_fmt.format(text))
+            variants.append((f"ترکیبی فانتزی {oi*10+ii+101}", styled))
+    # De-duplicate output while retaining the first descriptive label.
+    result=[]; seen=set()
+    for name, value in variants:
+        if value not in seen:
+            seen.add(value); result.append((name, value))
+        if len(result) >= 200: break
+    # Guarantee exactly 200 unique choices even when a short Persian input makes
+    # some decorative wrappers visually identical.
+    serial = 1
+    while len(result) < 200:
+        value = f"『{serial:03d}』 {text} 『{serial:03d}』"
+        serial += 1
+        if value in seen: continue
+        seen.add(value)
+        result.append((f"قاب شماره‌دار {serial-1}", value))
+    return result
+
 def convert_font(text, style=0):
     variants = font_variants(text)
     return variants[style % len(variants)][1]
@@ -878,6 +911,110 @@ _GROUP_ALIASES = {
     "قفل استیکر": "set_lock_stickers_on", "بازکردن استیکر": "set_lock_stickers_off",
     "قفل ویس": "set_lock_voice_on", "بازکردن ویس": "set_lock_voice_off",
     "قفل ویدئوی گرد": "set_lock_video_notes_on", "بازکردن ویدئوی گرد": "set_lock_video_notes_off",
+    'دستورات کامل': 'help_full',
+    'فهرست دستورات': 'help_full',
+    'لیست دستورات': 'help_full',
+    'همه دستورات': 'help_full',
+    'راهنمای کامل': 'help_full',
+    'شناسه من': 'id',
+    'آیدی من': 'id',
+    'آیدی گروه': 'id',
+    'شناسه گروه': 'id',
+    'شناسه عضو': 'id',
+    'وضعیت ربات': 'ping',
+    'ربات فعاله': 'ping',
+    'تست ربات': 'ping',
+    'پینگ ربات': 'ping',
+    'بررسی ربات': 'ping',
+    'قانون گروه': 'rules',
+    'قوانین گروه': 'rules',
+    'دیدن قوانین': 'rules',
+    'نمایش قوانین': 'rules',
+    'قانون ها': 'rules',
+    'آمار گروه': 'gstats',
+    'گزارش آمار': 'gstats',
+    'آمار اعضا': 'gstats',
+    'آمار پیام\u200cها': 'gstats',
+    'آمار پیامها': 'gstats',
+    'هوش بپرس': 'ai',
+    'از هوش بپرس': 'ai',
+    'سوال هوش': 'ai',
+    'سؤال هوش': 'ai',
+    'دستیار هوشمند': 'ai',
+    'کاربر بن': 'ban',
+    'بن کاربر': 'ban',
+    'مسدود کاربر': 'ban',
+    'مسدودسازی کاربر': 'ban',
+    'اخراجی بن': 'ban',
+    'رفع مسدودیت': 'unban',
+    'لغو بن': 'unban',
+    'آزادسازی کاربر': 'unban',
+    'رفع بلاک': 'unban',
+    'آزاد کردن': 'unban',
+    'سکوت کاربر': 'mute',
+    'ساکت کن': 'mute',
+    'بیصدا کن': 'mute',
+    'محدود کن': 'mute',
+    'محدودسازی': 'mute',
+    'آزاد سکوت': 'unmute',
+    'سکوت بردار': 'unmute',
+    'رفع محدودیت': 'unmute',
+    'بازکردن سکوت': 'unmute',
+    'کاربر آزاد': 'unmute',
+    'بیرون کن': 'kick',
+    'حذف عضو': 'kick',
+    'اخراج عضو': 'kick',
+    'بنداز بیرون': 'kick',
+    'شوتش کن': 'kick',
+    'شوت کن': 'kick',
+    'بندازش بیرون': 'kick',
+    'بفرستش بیرون': 'kick',
+    'خارج کن': 'kick',
+    'اخطار کاربر': 'warn',
+    'هشدار کاربر': 'warn',
+    'ثبت اخطار': 'warn',
+    'اخطار عضو': 'warn',
+    'هشدار بده': 'warn',
+    'سنجاق پیام': 'pin',
+    'پیام سنجاق': 'pin',
+    'پین پیام': 'pin',
+    'ثابت کن': 'pin',
+    'پین کن': 'pin',
+    'لغو پین': 'unpin',
+    'بازکردن سنجاق': 'unpin',
+    'حذف سنجاق': 'unpin',
+    'برداشتن پین': 'unpin',
+    'لغو سنجاق': 'unpin',
+    'پاک کردن': 'delete',
+    'حذف پیام': 'delete',
+    'پاک پیام': 'delete',
+    'پاکش کن': 'delete',
+    'پیام حذف': 'delete',
+    'پاکسازی گروه': 'clean',
+    'پاکسازی چت': 'clean',
+    'تمیزکاری گروه': 'clean',
+    'پاک کردن پیامها': 'clean',
+    'حذف پیامها': 'clean',
+    'گزارش بده': 'report',
+    'گزارش تخلف': 'report',
+    'ثبت گزارش': 'report',
+    'گزارش عضو': 'report',
+    'ارسال گزارش': 'report',
+    'ضد لینک': 'set_anti_link_on',
+    'لینک ممنوع': 'set_anti_link_on',
+    'قفل لینک روشن': 'set_anti_link_on',
+    'ضدلینک فعال': 'set_anti_link_on',
+    'لینک باز': 'set_anti_link_off',
+    'ضد تبلیغ': 'set_anti_ads_on',
+    'تبلیغ ممنوع': 'set_anti_ads_on',
+    'قفل تبلیغ روشن': 'set_anti_ads_on',
+    'ضدتبلیغ فعال': 'set_anti_ads_on',
+    'تبلیغ آزاد': 'set_anti_ads_off',
+    'تغییر نام گروه': 'set_title',
+    'اسم گروه به': 'set_title',
+    'نام گروه به': 'set_title',
+    'تغییر توضیحات گروه': 'set_description',
+    'توضیحات گروه به': 'set_description',
 }
 
 def _normalize_group_command(text):
@@ -929,8 +1066,18 @@ def _handle_group_shortcut(message, text):
         try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
         except Exception: bot.send_message(chat_id, esc(answer[:3900]), reply_to_message_id=message.message_id)
         return True
+    if command == "help_full":
+        phrases = sorted(_GROUP_ALIASES.keys())
+        text_out = "📚 <b>فهرست عبارت‌های پشتیبانی‌شده</b>\n" + "، ".join(phrases)
+        chunks = [text_out[i:i+3500] for i in range(0, len(text_out), 3500)]
+        for index, chunk in enumerate(chunks):
+            if index == 0:
+                bot.reply_to(message, chunk)
+            else:
+                bot.send_message(chat_id, chunk)
+        return True
     if command == "help":
-        bot.reply_to(message, "📚 <b>دستورات عمومی:</b> پینگ، آیدی، قوانین، آمار، هوش، راهنما\n<b>مدیریت (با ریپلای روی پیام عضو):</b> بن، رفع بن، سیک/سکوت، رفع سکوت، اخراج، اخطار، سنجاق، لغو سنجاق، حذف، پاکسازی، گزارش\nفرمان‌های مدیریتی فقط برای مدیران گروه فعال‌اند.")
+        bot.reply_to(message, "📚 <b>دستورات عمومی:</b> پینگ، آیدی، قوانین، آمار، هوش، راهنما\n<b>مدیریت (با ریپلای روی پیام عضو):</b> بن، رفع بن، سکوت، رفع سکوت، اخراج، اخطار، سنجاق، لغو سنجاق، حذف، پاکسازی، گزارش\n<b>تنظیمات:</b> ضدلینک، ضدتبلیغ، ضداسپم، ضدتکرار، قفل رسانه و انواع رسانه\n<b>اطلاعات گروه:</b> تغییر اسم و توضیحات با نوشتن متن جدید\nبرای فهرست کامل عبارت‌ها بنویس: «دستورات کامل»\nفرمان‌های مدیریتی فقط با مجوز مدیر گروه اجرا می‌شوند.")
         return True
     if command == "id":
         target = _reply_target(message) or uid
@@ -1029,6 +1176,73 @@ def _handle_group_shortcut(message, text):
         bot.reply_to(message, "⚠️ انجام دستور ناموفق بود؛ دسترسی ادمین ربات و مجوزهای گروه را بررسی کن.")
     return True
 
+
+
+def handle_group_info_request(message, text=None):
+    """Change group title/description after checking requester and bot permissions."""
+    raw = re.sub(r"[\u200c\s]+", " ", (text or "").strip()).replace("ي", "ی").replace("ك", "ک")
+    if not raw:
+        return False
+    low = raw.casefold()
+    is_description = bool(re.search(r"توضیح(?:ات)?\s*گروه|گروه.{0,12}توضیح", low))
+    is_title = bool(re.search(r"(?:اسم|نام|عنوان)\s*گروه|گروه.{0,12}(?:اسم|نام|عنوان)", low))
+    if not is_description and not is_title:
+        return False
+    target = ""
+    if is_description:
+        patterns = [
+            r"(?:توضیح(?:ات)?)\s*گروه\s*(?:(?:را|رو)\s*)?(?:عوض\s*کن|تغییر\s*بده)\s*به\s+(.+)$",
+            r"(?:توضیح(?:ات)?)\s*گروه\s*(?:(?:را|رو)\s*)?به\s+(.+)$",
+            r"گروه\s*(?:(?:را|رو)\s*)?توضیح(?:ات)?\s*به\s+(.+)$",
+        ]
+    else:
+        patterns = [
+            r"(?:اسم|نام|عنوان)\s*گروه\s*(?:(?:را|رو)\s*)?(?:عوض\s*کن|تغییر\s*(?:نام\s*)?بده)\s*به\s+(.+)$",
+            r"(?:اسم|نام|عنوان)\s*گروه\s*(?:(?:را|رو)\s*)?به\s+(.+)$",
+            r"گروه\s*(?:(?:را|رو)\s*)?به\s+(.+)$",
+            r"(?:اسم|نام|عنوان)\s*گروه\s*(?:(?:را|رو)\s*)?(?:بذار|بگذار|بکن|کن)\s+(.+)$",
+        ]
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            target = match.group(1).strip().strip("«»\\\"' ")
+            target = re.sub(r"\s+(?:تغییر\s*(?:بده|ده)|عوض\s*کن|تغییر\s*نام\s*(?:بده|ده))$", "", target).strip()
+            break
+    if not target or target.casefold() in {"عوض کن", "تغییر بده", "تغییر نام بده", "بکن", "بذار"}:
+        example = "توضیحات گروه رو به متن جدید تغییر بده" if is_description else "اسم گروه رو به نام جدید تغییر بده"
+        bot.reply_to(message, f"✍️ {('متن توضیحات' if is_description else 'اسم جدید')} رو هم بنویس.\nمثال: «{example}»")
+        return True
+    max_length = 255 if is_description else 128
+    if len(target) > max_length:
+        bot.reply_to(message, f"⚠️ {'توضیحات' if is_description else 'اسم گروه'} حداکثر {max_length} نویسه می‌تواند باشد.")
+        return True
+    chat_id = message.chat.id
+    user_id = getattr(getattr(message, "from_user", None), "id", 0)
+    try:
+        requester = bot.get_chat_member(chat_id, user_id)
+        requester_status = getattr(requester, "status", "")
+        if requester_status not in ("administrator", "creator") or (requester_status != "creator" and not getattr(requester, "can_change_info", False)):
+            bot.reply_to(message, "⛔ برای تغییر نام یا توضیحات، باید مدیر گروه با مجوز «تغییر اطلاعات گروه» باشی.")
+            return True
+        me = bot.get_me()
+        bot_member = bot.get_chat_member(chat_id, me.id)
+        bot_status = getattr(bot_member, "status", "")
+        if bot_status not in ("administrator", "creator") or (bot_status != "creator" and not getattr(bot_member, "can_change_info", False)):
+            bot.reply_to(message, "⚠️ ربات باید مدیر گروه باشد و مجوز «تغییر اطلاعات گروه» داشته باشد.")
+            return True
+        if is_description:
+            bot.set_chat_description(chat_id, target)
+        else:
+            bot.set_chat_title(chat_id, target)
+        add_log("group_info_changed", chat_id, user_id, ("description=" if is_description else "title=") + target[:120])
+        save_data()
+        bot.reply_to(message, f"✅ {'توضیحات' if is_description else 'نام'} گروه تغییر کرد.")
+    except Exception as e:
+        print("Group info change error:", repr(e))
+        bot.reply_to(message, "⚠️ تغییر انجام نشد. مجوز «تغییر اطلاعات گروه» ربات و مدیر درخواست‌دهنده را بررسی کن.")
+    return True
+
+
 def handle_ai_group_management(message, text=None):
     """Execute a small, explicit set of safe group-setting requests from AI replies."""
     normalized = (text or "").casefold().replace("ي", "ی").replace("ك", "ک")
@@ -1039,6 +1253,16 @@ def handle_ai_group_management(message, text=None):
         (("ضداسپم", "قفلاسپم"), "anti_spam"),
         (("ضدتکرار", "قفلپیامتکراری"), "anti_repeat"),
         (("قفلرسانه", "قفرسانه"), "media_lock"),
+        (("قفلعکس", "قفلتصویر"), "lock_photos"),
+        (("قفلفیلم", "قفلویدیو", "قفلکلیپ"), "lock_videos"),
+        (("قفلفایل", "قفلمدرک"), "lock_files"),
+        (("قفلاستیکر", "قفلگیف"), "lock_stickers"),
+        (("قفلویس", "قفلصوت", "قفلپیامصوتی"), "lock_voice"),
+        (("قفلپیامگرد", "قفلیدئویگرد"), "lock_video_notes"),
+        (("فیلترشماره", "قفلشمارهتماس"), "phone_filter"),
+        (("قفلتگ", "قفلمنشن", "قفلمنشنها"), "lock_mentions"),
+        (("قفلهاشتگ", "قفلهشتگها"), "lock_hashtags"),
+        (("قفلنامکاربری", "قفلآیدی", "قفل یوزرنیم"), "lock_usernames"),
         (("خوشامدگویی", "خوشامد"), "welcome_on"),
         (("خداحافظی",), "farewell_on"),
     ]
@@ -1062,7 +1286,7 @@ def handle_ai_group_management(message, text=None):
         bot.reply_to(message, "⛔ برای تغییر تنظیمات امنیتی باید مدیر همین گروه باشی.")
         return True
     enabled = bool(is_on and not is_off)
-    if enabled and target_setting in {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "media_lock"}:
+    if enabled and target_setting in {"anti_link", "anti_ads", "anti_spam", "anti_repeat", "anti_forward", "media_lock", "lock_photos", "lock_videos", "lock_files", "lock_stickers", "lock_voice", "lock_video_notes", "phone_filter", "lock_mentions", "lock_hashtags", "lock_usernames"}:
         try:
             me = bot.get_me()
             member = bot.get_chat_member(chat_id, me.id)
@@ -1079,7 +1303,11 @@ def handle_ai_group_management(message, text=None):
     label = {
         "anti_link": "ضدلینک", "anti_ads": "ضدتبلیغ", "anti_spam": "ضداسپم",
         "anti_repeat": "ضدتکرار", "media_lock": "قفل رسانه",
-        "welcome_on": "خوشامدگویی", "farewell_on": "خداحافظی"
+        "welcome_on": "خوشامدگویی", "farewell_on": "خداحافظی",
+        "lock_photos": "قفل عکس", "lock_videos": "قفل فیلم", "lock_files": "قفل فایل",
+        "lock_stickers": "قفل استیکر/گیف", "lock_voice": "قفل ویس", "lock_video_notes": "قفل ویدئوی گرد",
+        "phone_filter": "فیلتر شماره تماس", "lock_mentions": "قفل تگ/منشن",
+        "lock_hashtags": "قفل هشتگ", "lock_usernames": "قفل نام‌کاربری"
     }.get(target_setting, target_setting)
     bot.reply_to(message, f"✅ {label} {'روشن' if enabled else 'خاموش'} شد.")
     return True
@@ -1109,12 +1337,18 @@ def group_message_handler(message):
         activation_match = re.fullmatch(r"فعال(?:\s|\u200c)*سازی\s+(\d+)\s*(?:روز(?:ه)?|روزِ)?", normalized_activation)
         if activation_match:
             uid = getattr(getattr(message, "from_user", None), "id", 0)
-            if not is_owner(uid):
-                bot.reply_to(message, "⛔ فقط مالک ربات می‌تواند اشتراک گروه را فعال کند.")
+            if not is_bot_admin(uid):
+                bot.reply_to(message, "⛔ فقط مالک اصلی یا ادمین فروشِ ثبت‌شده می‌تواند اشتراک گروه را فعال کند.")
                 return
             days = int(activation_match.group(1))
             if not 0 <= days <= 3650:
                 bot.reply_to(message, "⚠️ تعداد روز باید بین ۰ تا ۳۶۵۰ باشد؛ عدد ۰ یعنی دائمی.")
+                return
+            if not is_owner(uid) and days == 0:
+                bot.reply_to(message, "🔐 ادمین فروش نمی‌تواند مجوز دائمی بدهد؛ برای امنیت، فقط مالک اصلی می‌تواند فعال‌سازی دائمی انجام دهد.")
+                return
+            if not is_owner(uid) and days > 365:
+                bot.reply_to(message, "🔐 ادمین فروش حداکثر می‌تواند مجوز ۳۶۵ روزه فعال کند؛ مدت بیشتر فقط با مالک اصلی است.")
                 return
             try:
                 me = bot.get_me()
@@ -1150,7 +1384,49 @@ def group_message_handler(message):
                 try: bot.send_message(message.chat.id, group_install_message(message.chat.id, getattr(message.chat,"title", "این گروه")), reply_markup=support_contact_markup())
                 except Exception: pass
             return
-        # AI in groups is activated only by replying to a message sent by this bot.
+        if text and handle_group_info_request(message, text):
+            return
+        compact_group = re.sub(r"[\s‌]+", "", normalized_text)
+        if compact_group in {"پروکسی", "لیستپروکسی", "لیستپروکسیها", "پروکسیها", "پروکسیلیست", "پروکسیلیستها", "proxy", "proxies", "proxylist"}:
+            bot.reply_to(message, proxy_list_text(limit=20, with_ping=True)); return
+        if compact_group in {"فونت", "لیستفونت", "فونتها", "لیستفونتها", "فونتلیست", "فونتلیستها", "فونت۲۰۰", "فونت200", "font", "fonts", "fontlist"}:
+            bot.reply_to(message, "🔤 متن یا اسم دلخواهت رو در پیوی ربات بفرست تا ۲۰۰ مدل فونت فانتزی بسازم."); return
+        if compact_group in {"بازی", "یهبازی", "یهبازی", "game", "play"}:
+            uid = getattr(getattr(message, "from_user", None), "id", 0); key=f"{message.chat.id}:{uid}"
+            idx=GAME_CYCLES.get(key,0)%10
+            games=["🏀 بازی اول: بسکتبال! توپ رو تصور کن؛ یه عدد از ۱ تا ۵ بفرست.", "⚽ بازی دوم: فوتبال! یه عدد از ۱ تا ۵ انتخاب کن.", "🧩 بازی سوم: معمای کوتاه! یه عدد از ۱ تا ۵ بفرست.", "🎯 بازی چهارم: هدف‌گیری! یه عدد از ۱ تا ۵ بفرست.", "🪨 بازی پنجم: سنگ‌کاغذ‌قیچی؛ بنویس سنگ، کاغذ یا قیچی.", "🧠 بازی ششم: حدس عدد؛ یه عدد از ۱ تا ۱۰ بفرست.", "🎲 بازی هفتم: تاس شانسی؛ عدد ۱ تا ۶ انتخاب کن.", "🧮 بازی هشتم: حاصل ۷+۸ چنده؟", "🔤 بازی نهم: با حرف «م» یه کلمه بگو.", "🏁 بازی دهم: یه عدد از ۱ تا ۱۰ انتخاب کن."]
+            GAME_CYCLES[key]=idx+1; bot.reply_to(message,games[idx]); return
+        # Tag only users the bot has actually observed; Telegram Bot API cannot enumerate all group members.
+        tag_match = re.fullmatch(r"(?:تگ|تگکن|منشن)\s*(\d{1,3})?", normalized_text.replace("‌", " ").strip())
+        if tag_match:
+            uid = getattr(getattr(message, "from_user", None), "id", 0)
+            if not is_group_admin(message.chat.id, uid):
+                bot.reply_to(message, "⛔ تگ گروهی فقط برای مدیران و مالک مجاز است."); return
+            count = min(100, max(1, int(tag_match.group(1) or 50)))
+            known = list(DATA.setdefault("active_members", {}).setdefault(str(message.chat.id), {}).keys())
+            known = [x for x in known if str(x) != str(uid)]
+            if not known:
+                bot.reply_to(message, "هنوز شناسه‌ای از اعضای فعال این گروه ثبت نشده. اعضا باید پیام بدهند؛ تلگرام اجازهٔ گرفتن فهرست کامل اعضا را به ربات نمی‌دهد."); return
+            selected=known[-count:]
+            chunks=[selected[i:i+20] for i in range(0,len(selected),20)]
+            for ci, chunk in enumerate(chunks,1):
+                mentions=[]
+                for member_id in chunk:
+                    try:
+                        cm=bot.get_chat_member(message.chat.id,int(member_id)); user=cm.user
+                        nm=" ".join(x for x in [getattr(user,"first_name", ""),getattr(user,"last_name","")] if x).strip() or "عضو"
+                    except Exception: nm="عضو"
+                    mentions.append(f'<a href="tg://user?id={int(member_id)}">{esc(nm)}</a>')
+                bot.send_message(message.chat.id, f"🏷️ <b>تگ اعضا {ci}/{len(chunks)}</b>\n"+" ، ".join(mentions), disable_web_page_preview=True)
+            add_log("group_tag",message.chat.id,uid,f"requested={count}; sent={len(selected)}")
+            return
+        if normalized_text in {"ربات", "دستیار", "هوش", "هوش مصنوعی"}:
+            bot.reply_to(message, "جانم! 🌹 برای سؤال، بنویس «ربات سؤال تو» یا «هوش سؤال تو». برای تغییر تنظیمات، دستور را روشن و واضح بنویس؛ مثلاً «قفل لینک روشن کن». ")
+            return
+        # Allow supported Persian group-management commands without requiring a reply to the bot.
+        if text and handle_ai_group_management(message, text.strip()):
+            return
+        # AI can be activated by replying to the bot or by starting with «هوش»، «ربات» or «دستیار».
         global BOT_USERNAME, BOT_ID
         try:
             if not BOT_ID or not BOT_USERNAME:
@@ -1164,11 +1440,19 @@ def group_message_handler(message):
         reply_to_bot = bool(replied and getattr(getattr(replied, "from_user", None), "is_bot", False)
                             and (getattr(getattr(replied, "from_user", None), "id", None) == bot_id
                                  or (BOT_USERNAME and (getattr(getattr(replied, "from_user", None), "username", "") or "").casefold() == BOT_USERNAME)))
-        if reply_to_bot and text and text.strip() and not text.strip().startswith("/"):
-            if handle_ai_group_management(message, text.strip()):
-                return
+        ai_question = ""
+        if text and text.strip() and not text.strip().startswith("/"):
+            if reply_to_bot:
+                ai_question = text.strip()
+            else:
+                normalized_ai = text.strip().casefold().replace("ي", "ی").replace("ك", "ک")
+                for prefix in ("از ربات بپرس ", "دستیار ", "ربات ", "هوش مصنوعی ", "هوش ", "هوش‌ ", "هش ", "هوس ", "هوشصنعتی "):
+                    if normalized_ai.startswith(prefix):
+                        ai_question = text.strip()[len(prefix):].strip()
+                        break
+        if ai_question:
             status = bot.reply_to(message, "🧠 دارم بررسی می‌کنم…")
-            answer = ask_ai(text.strip())
+            answer = ask_ai(ai_question)
             try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
             except Exception: bot.send_message(message.chat.id, esc(answer[:3900]), reply_to_message_id=message.message_id)
             return
@@ -1662,7 +1946,7 @@ def callback_handler(call):
                 WAITING[uid]={"action":"payout_amount"}
                 bot.answer_callback_query(call.id); bot.send_message(uid, f"💸 مبلغ برداشت را به تومان وارد کن. موجودی فعلی: {wallet(uid):,} تومان\nروش پرداخت را بعداً با مالک هماهنگ می‌کنی؛ اطلاعات بانکی را اینجا نفرست."); return
             if data=="user:font":
-                WAITING[uid]={"action":"public_font_text"}; bot.answer_callback_query(call.id); bot.send_message(uid,"🔤 ۱۰۰ سبک فونت کاملاً رایگان است. متن را بفرست؛ خروجی در ۱۰ پیام ۱۰تایی نمایش داده می‌شود."); return
+                WAITING[uid]={"action":"public_font_text"}; bot.answer_callback_query(call.id); bot.send_message(uid,"🔤 ۲۰۰ سبک فونت کاملاً رایگان است. متن را بفرست؛ خروجی در ۲۰ پیام ۱۰تایی نمایش داده می‌شود."); return
             if data=="user:proxies":
                 bot.answer_callback_query(call.id)
                 bot.send_message(uid,proxy_list_text(limit=10, with_ping=False)); return
@@ -1732,7 +2016,7 @@ def callback_handler(call):
             if not is_owner(uid):
                 bot.answer_callback_query(call.id,"⛔ این پنل مخصوص مالک رباته!",show_alert=True); return
             action=data.split(":",1)[1]
-            global_actions={"public_features","channel_url","website_url","referral_reward_toman","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","announcement","group_stats","group_settings","search_logs"}
+            global_actions={"public_features","channel_url","website_url","referral_reward_toman","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","announcement","group_stats","group_settings","search_logs","register_bot_admin","remove_bot_admin"}
             if action in global_actions:
                 WAITING[uid]={"action":action}
                 prompts={
@@ -1751,7 +2035,9 @@ def callback_handler(call):
                     "announcement":"شناسه گروه | متن اطلاعیه را بفرست.",
                     "group_stats":"شناسه گروه را بفرست (مثلاً -1001234567890).",
                     "group_settings":"شناسه گروه را بفرست (مثلاً -1001234567890).",
-                    "search_logs":"عبارت یا شناسه‌ای برای جست‌وجو در گزارش‌ها بفرست."
+                    "search_logs":"عبارت یا شناسه‌ای برای جست‌وجو در گزارش‌ها بفرست.",
+                    "register_bot_admin":"فقط نام کاربری تلگرام را با @ بفرست؛ نمونه: @username\nنکته امنیتی: آن شخص باید قبلاً ربات را باز کرده و /start زده باشد.",
+                    "remove_bot_admin":"نام کاربری ادمینی را که می‌خواهی دسترسی‌اش حذف شود با @ بفرست؛ نمونه: @username"
                 }
                 bot.answer_callback_query(call.id); bot.send_message(uid,prompts[action]); return
             group_actions={"welcome_text","farewell_text","rules","auto_reply","delete_reply","bad_word","warn_limit","whitelist","add_custom_command","delete_custom_command","quiet_hours","welcome_image","welcome_delete_seconds"}
@@ -1773,6 +2059,17 @@ def callback_handler(call):
                 WAITING[uid]={"action":"show_rules_group"}
                 bot.answer_callback_query(call.id); bot.send_message(uid,"شناسه گروه را بفرست تا قوانین همان گروه نمایش داده شود.")
                 return
+            if action == "bot_admins":
+                admins = DATA.setdefault("bot_admins", {})
+                if not admins:
+                    body = "📋 هنوز ادمین جانبی ثبت نشده است."
+                else:
+                    lines = []
+                    for admin_id, row in admins.items():
+                        username = row.get("username", "") if isinstance(row, dict) else str(row)
+                        lines.append(f"• @{esc(username.lstrip('@'))} — شناسه: <code>{esc(admin_id)}</code>")
+                    body = "👮 <b>ادمین‌های ثبت‌شده</b>\n━━━━━━━━━━━━━━\n" + "\n".join(lines)
+                bot.answer_callback_query(call.id); bot.send_message(uid, body); return
             WAITING[uid]={"action":"show_"+action,"chat_id":chat_id}
             bot.answer_callback_query(call.id); handle_show(uid,action); WAITING.pop(uid,None); return
         if data=="game:guess":
@@ -1830,25 +2127,46 @@ def private_text_handler(message):
     uid=message.from_user.id; text=(message.text or "").strip()
     ensure_user(uid,message.from_user.username,message.from_user.first_name)
     if text.startswith("/"): return
-    # AI trigger requested by the owner: only «هوش» or a reply to the bot activates it.
     normalized_private = text.replace("ي", "ی").replace("ك", "ک").strip().casefold()
-    if normalized_private == "هوش":
-        bot.reply_to(message, "جانم، بگو ببینم؟")
+    # Direct utilities are intentionally command-triggered, not unsolicited chat.
+    compact = re.sub(r"[\s‌]+", "", normalized_private)
+    if compact in {"پروکسی", "لیستپروکسی", "لیستپروکسیها", "پروکسیها", "پروکسیلیست", "پروکسیلیستها", "proxy", "proxies", "proxylist"}:
+        bot.send_message(uid, proxy_list_text(limit=20, with_ping=True)); return
+    if compact in {"فونت", "لیستفونت", "فونتها", "لیستفونتها", "فونتلیست", "فونتلیستها", "فونت۲۰۰", "فونت200", "font", "fonts", "fontlist"}:
+        WAITING[uid] = {"action":"public_font_text"}
+        bot.send_message(uid, "🔤 متن یا اسم دلخواهت رو بفرست تا ۲۰۰ مدل فونت فانتزی و جیگول میگول بسازم.")
         return
-    if normalized_private.startswith("هوش "):
-        question = text.strip()[len("هوش "):].strip()
-        if not question:
-            bot.reply_to(message, "جانم، بگو ببینم؟")
+    if compact in {"بازی", "یهبازی", "یهبازی", "game", "play"}:
+        key=f"private:{uid}"; idx=GAME_CYCLES.get(key,0)%10
+        games=["🏀 بازی اول: بسکتبال!\nتوپ رو تصور کن؛ از ۱ تا ۵ یه عدد انتخاب کن و بفرست.", "⚽ بازی دوم: فوتبال!\nیه عدد از ۱ تا ۵ بفرست تا نتیجه رو ببینی.", "🧩 بازی سوم: معمای کوتاه!\nکدوم عدد بین ۱ تا ۵ رو انتخاب می‌کنی؟", "🎯 بازی چهارم: هدف‌گیری!\nیه عدد از ۱ تا ۵ بفرست.", "🪨 بازی پنجم: سنگ‌کاغذ‌قیچی!\nبنویس سنگ، کاغذ یا قیچی.", "🧠 بازی ششم: حدس عدد!\nیه عدد از ۱ تا ۱۰ بفرست.", "🎲 بازی هفتم: تاس شانسی!\nیه عدد از ۱ تا ۶ انتخاب کن.", "🧮 بازی هشتم: حساب سریع!\nحاصل ۷+۸ چنده؟", "🔤 بازی نهم: کلمه‌سازی!\nبا حرف «م» یه کلمه بگو.", "🏁 بازی دهم: چالش سرعت!\nاز ۱ تا ۱۰ یه عدد انتخاب کن."]
+        GAME_CYCLES[key]=idx+1
+        bot.send_message(uid, games[idx]); return
+    if normalized_private in {"هوش", "هوش مصنوعی", "دستیار", "دستیار هوشمند"}:
+        bot.send_message(uid, "🧠 دستیار آماده است. درخواستت رو بعد از «هوش» بنویس؛ مثلاً «هوش این متن رو خلاصه کن» یا «هوش راهنمای قفل لینک رو بگو».")
+        return
+    # Recognize panel commands in private chat too; previously they were silently ignored.
+    if normalized_private in {"پنل", "پنل مدیریت", "پنل مالک", "مدیریت"}:
+        if is_owner(uid):
+            bot.send_message(uid, "🔐 پنل خصوصی مالک باز شد.")
+            send_panel(uid, user_id=uid)
         else:
-            status = bot.reply_to(message, "🧠 دارم بررسی می‌کنم…")
-            answer = ask_ai(question)
-            try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
-            except Exception: bot.send_message(uid, esc(answer[:3900]), reply_to_message_id=message.message_id)
+            bot.send_message(uid, "⛔ پنل مدیریت فقط برای مالک ربات است.")
         return
+    if normalized_private in {"سلام", "سلام ربات", "درود", "راهنما", "امکانات", "شروع", "help", "hi", "hello"}:
+        bot.send_message(uid, start_welcome_text(message.from_user),
+                         reply_markup=owner_start_keyboard() if is_owner(uid) else public_keyboard())
+        return
+    question = ""
+    for prefix in ("از ربات بپرس ", "دستیار ", "ربات ", "هوش مصنوعی ", "هوش ", "هوش‌ ", "هش ", "هوس ", "هوشصنعتی "):
+        if normalized_private.startswith(prefix):
+            question = text[len(prefix):].strip()
+            break
     replied = getattr(message, "reply_to_message", None)
-    if replied and getattr(getattr(replied, "from_user", None), "is_bot", False) and text and not text.startswith("/"):
+    if not question and replied and getattr(getattr(replied, "from_user", None), "is_bot", False) and text and not text.startswith("/"):
+        question = text
+    if question:
         status = bot.reply_to(message, "🧠 دارم بررسی می‌کنم…")
-        answer = ask_ai(text)
+        answer = ask_ai(question)
         try: bot.edit_message_text(esc(answer[:3900]), status.chat.id, status.message_id)
         except Exception: bot.send_message(uid, esc(answer[:3900]), reply_to_message_id=message.message_id)
         return
@@ -1871,10 +2189,57 @@ def private_text_handler(message):
     action=pending.get("action",""); chat_id=pending.get("chat_id",uid)
     owner_only={"add_proxy","delete_proxy","add_customer","find_customer","delete_reply","bad_word","warn_limit","toggle_group_setting","select_group_for_action",
                 "public_features","channel_url","website_url","referral_reward_toman","wallet_adjust","add_whitelist","remove_whitelist","member_info","clear_warnings","activate_group","extend_group","revoke_group","add_custom_command","delete_custom_command","announcement","group_stats","group_settings","search_logs",
-                "welcome_text","farewell_text","rules","auto_reply","quiet_hours","welcome_image","welcome_delete_seconds","warn","mute","unmute","ban","unban","kick","show_list_group","show_rules_group"}
+                "welcome_text","farewell_text","rules","auto_reply","quiet_hours","welcome_image","welcome_delete_seconds","warn","mute","unmute","ban","unban","kick","show_list_group","show_rules_group","register_bot_admin","remove_bot_admin"}
     if action in owner_only and not is_owner(uid):
         WAITING.pop(uid,None); bot.send_message(uid,"⛔ این عملیات فقط برای مالک است."); return
     try:
+        if action in {"register_bot_admin", "remove_bot_admin"}:
+            if not is_owner(uid):
+                WAITING.pop(uid, None)
+                bot.send_message(uid, "⛔ فقط مالک اصلی می‌تواند ادمین ربات ثبت یا حذف کند.")
+                return
+            username = text.strip()
+            if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", username):
+                raise ValueError("فقط نام کاربری معتبر با @ وارد کن؛ نمونه: @username")
+            wanted = username[1:].casefold()
+            found_id = None
+            for known_id, profile in DATA.setdefault("users", {}).items():
+                if isinstance(profile, dict) and str(profile.get("username", "")).lstrip("@").casefold() == wanted:
+                    found_id = str(known_id)
+                    break
+            if action == "register_bot_admin":
+                if found_id is None:
+                    raise ValueError("این کاربر هنوز در ربات شناخته نشده است. از او بخواه یک‌بار ربات را باز کند و /start بزند؛ سپس دوباره همین @username را ثبت کن.")
+                if int(found_id) == OWNER_ID:
+                    raise ValueError("مالک اصلی از قبل دسترسی کامل دارد و نیازی به ثبت مجدد ندارد.")
+                DATA.setdefault("bot_admins", {})[found_id] = {
+                    "username": username[1:],
+                    "added_by": int(uid),
+                    "added_at": now_text()
+                }
+                save_data(); add_log("bot_admin_registered", "", uid, f"target={found_id}; username={username}")
+                WAITING.pop(uid, None)
+                bot.send_message(uid, f"✅ ادمین فروش ثبت شد: <b>{esc(username)}</b>\nاین ادمین می‌تواند مجوز گروه‌ها را فعال کند؛ اما به پنل مالک، تنظیمات حساس، اطلاعات مالی و مدیریت ادمین‌ها دسترسی ندارد.")
+                try:
+                    bot.send_message(int(found_id), "👮 دسترسی ادمین فروش MASIH GUARD برایت فعال شد. برای فعال‌کردن گروه، ربات باید در همان گروه ادمین باشد؛ سپس داخل گروه بنویس: فعال سازی ۳۰ روز. این دسترسی اجازه تغییر مالک یا مدیریت ادمین‌ها را نمی‌دهد.")
+                except Exception:
+                    pass
+                return
+            admins = DATA.setdefault("bot_admins", {})
+            if found_id is None:
+                for admin_id, row in admins.items():
+                    stored_name = row.get("username", "") if isinstance(row, dict) else str(row)
+                    if stored_name.lstrip("@").casefold() == wanted:
+                        found_id = str(admin_id); break
+            if found_id is None or found_id not in admins:
+                raise ValueError("ادمینی با این @username پیدا نشد.")
+            admins.pop(found_id, None)
+            save_data(); add_log("bot_admin_removed", "", uid, f"target={found_id}; username={username}")
+            WAITING.pop(uid, None)
+            bot.send_message(uid, f"✅ دسترسی ادمین {esc(username)} حذف شد.")
+            try: bot.send_message(int(found_id), "ℹ️ دسترسی ادمین فروش ربات توسط مالک اصلی حذف شد.")
+            except Exception: pass
+            return
         if action in {"public_features","channel_url","website_url","referral_reward_toman"}:
             cfg = bot_settings()
             if action == "public_features":
@@ -2102,25 +2467,25 @@ def private_text_handler(message):
                 bot.send_message(uid,f"🔎 <b>اطلاعات عضو</b>\nنام: {esc(full_name)}\nشناسه: <code>{member}</code>\nوضعیت: {esc(status)}\nاخطارها: {warnings}")
             except Exception as e: raise ValueError("دریافت اطلاعات عضو ممکن نشد؛ شناسه و دسترسی ربات را بررسی کن.")
         elif action == "public_font_text":
-            if len(text) > 120: raise ValueError("برای نمایش ۱۰۰ سبک، متن حداکثر ۱۲۰ نویسه باشد.")
+            if len(text) > 120: raise ValueError("برای نمایش ۲۰۰ سبک، متن حداکثر ۱۲۰ نویسه باشد.")
             WAITING[uid]={"action":"public_font_name","font_text":text}
             bot.send_message(uid,"حالا اسم دلخواهت را برای عنوان خروجی بفرست؛ اگر عنوان نمی‌خواهی، بنویس بدون اسم.")
             return
         elif action == "public_font_name":
             raw=pending.get("font_text", "")
             label="" if text.casefold() in {"بدون اسم","ندارد","نه"} else text[:50]
-            heading=(f"✨ <b>{esc(label)}</b>\n━━━━━━━━━━━━━━\n" if label else "🔤 <b>۱۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n")
+            heading=(f"✨ <b>{esc(label)}</b>\n━━━━━━━━━━━━━━\n" if label else "🔤 <b>۲۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n")
             variants=font_variants(raw)
             for start in range(0, 100, 10):
                 lines=[]
                 for idx,(name,value) in enumerate(variants[start:start+10], start=start+1):
                     lines.append(f"<b>{idx}. {esc(name)}</b>\n<code>{esc(value)}</code>")
-                bot.send_message(uid, (heading if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,100)})</b>\n━━━━━━━━━━━━━━\n") + "\n\n".join(lines))
+                bot.send_message(uid, (heading if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,200)})</b>\n━━━━━━━━━━━━━━\n") + "\n\n".join(lines))
         elif action in ("public_font","font"):
             variants=font_variants(text[:120])
             for start in range(0,100,10):
                 lines=[f"<b>{idx}. {esc(name)}</b>\n<code>{esc(value)}</code>" for idx,(name,value) in enumerate(variants[start:start+10],start=start+1)]
-                bot.send_message(uid, ("🔤 <b>۱۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n" if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,100)})</b>\n━━━━━━━━━━━━━━\n")+"\n\n".join(lines))
+                bot.send_message(uid, ("🔤 <b>۲۰۰ سبک فونت رایگان</b>\n━━━━━━━━━━━━━━\n" if start==0 else f"🔤 <b>ادامهٔ فونت‌ها ({start+1} تا {min(start+10,200)})</b>\n━━━━━━━━━━━━━━\n")+"\n\n".join(lines))
         elif action in ("welcome_text","farewell_text","rules"):
             s=get_group_settings(chat_id); s[action]=text[:3000]; save_data(); bot.send_message(uid,"✅ ذخیره شد.")
         elif action=="auto_reply":
