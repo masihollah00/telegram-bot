@@ -1,6 +1,6 @@
 
 # -*- coding: utf-8 -*-
-"""MASIH GUARD S1000+ — single-file Telegram group management bot."""
+"""مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈 — single-file Telegram group management bot."""
 import os, re, json, time, random, threading, io, urllib.request, urllib.error, html, socket, shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -24,7 +24,7 @@ CARD_HOLDER = os.getenv("CARD_HOLDER", "").strip()
 WEBSITE_URL = os.getenv("WEBSITE_URL", "https://neon-portfolio-7vhj.onrender.com").strip()
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/IRHACK_APP33").strip()
 OWNER_CONTACT_URL = os.getenv("OWNER_CONTACT_URL", "https://t.me/Ma3ih01").strip()
-BRAND, VERSION = "MASIH GUARD", "S1000+"
+BRAND, VERSION = "مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈", "نسخهٔ پیشرفته"
 TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Tehran").strip() or "Asia/Tehran"
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN تنظیم نشده است؛ آن را در Environment هاست قرار بده.")
@@ -284,55 +284,55 @@ def bot_settings():
     return settings
 
 def start_welcome_text(user):
-    """Customer-facing Persian welcome and feature catalogue for /start."""
+    """Compact but broad, honest feature catalogue for the private /start screen."""
     raw_name = " ".join(x for x in [getattr(user, "first_name", ""), getattr(user, "last_name", "")] if x).strip() or "دوست عزیز"
     mention = f'<a href="tg://user?id={int(user.id)}">{esc(raw_name)}</a>'
     custom = str(bot_settings().get("public_features", "") or "").strip()
     if custom:
         marker = "__MASIH_CLICKABLE_USER_MENTION__"
         safe_custom = esc(custom.replace("{name}", marker)).replace(marker, mention)
-        return safe_custom + "\n\n" + PUBLIC_FEATURES + "\n\n📚 برای فهرست فرمان‌ها /help را بزن."
+        return safe_custom + "\n\n" + PUBLIC_FEATURES + "\n\n📚 فرمان‌ها: /help"
     return (
-        f"🌌 <b>سلام {mention}؛ به دنیای امنیت هوشمند خوش اومدی!</b>\n"
+        f"👋 سلام {mention}؛ خوش اومدی!\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🛡️ <b>MASIH GUARD S1000+</b>\n"
-        "<i>دستیار مدیریت، امنیت و ابزارهای کاربردی تلگرام</i>\n\n"
-        "🚀 <b>امکانات اصلی</b>\n"
-        "🔐 <b>امنیت گروه:</b> کنترل لینک و تبلیغات، ضداسپم و تکرار، کنترل فوروارد و رسانه، فیلتر شماره تماس، کلمات ممنوع، کپچا و ابزارهای امنیت هوشمند.\n"
-        "👥 <b>مدیریت اعضا:</b> اخطار، سکوت و رفع سکوت، مسدودسازی و آزادسازی، اخراج، گزارش تخلف، سنجاق و پاک‌سازی پیام‌ها با فرمان مجاز.\n"
-        "👋 <b>مدیریت ورود و خروج:</b> خوشامدگویی، خداحافظی، تنظیم متن و تصویر خوشامد، تأیید ورود و کنترل ضدیورش.\n"
-        "📢 <b>الزام ورود:</b> جوین اجباری کانال‌های تنظیم‌شده و الزام دعوت اعضا با لینک اختصاصی، در صورت فعال‌سازی مدیر گروه.\n"
-        "⚙️ <b>ابزارهای گروه:</b> قوانین، پاسخ خودکار، فرمان اختصاصی، یادداشت‌ها، اطلاعیه، آمار و گزارش فعالیت.\n"
-        "🧠 <b>دستیار هوشمند:</b> راهنمایی دربارهٔ امکانات و درخواست‌های پشتیبانی‌شده؛ اجرای تغییرات گروه فقط پس از بررسی دسترسی مدیر انجام می‌شود.\n"
-        "🎨 <b>ابزارهای جانبی:</b> تبدیل متن به سبک‌های فونت، فهرست پروکسی‌های ذخیره‌شده، تیکت پشتیبانی و بازی‌های سرگرمی.\n"
-        "🎮 <b>سرگرمی:</b> بازی متنی، بازی‌های مرورگری و جدول امتیازها.\n"
-        "💳 <b>حساب کاربری:</b> کیف پول تومانی، تاریخچهٔ تراکنش، دعوت دوستان، درخواست برداشت و بسته‌های اشتراک.\n\n"
-        "📚 <b>شروع سریع</b>\n"
-        "• <code>/help</code> — فهرست فرمان‌ها\n"
-        "• <code>/profile</code> — پروفایل و موجودی\n"
-        "• <code>/top</code> — جدول امتیازها\n"
-        "• <code>/game</code> یا «بازی» — بازی‌ها\n"
-        "• <code>/ai متن سؤال</code> — پرسش از دستیار\n"
-        "• <code>/ping</code> — بررسی پاسخ‌گویی ربات\n"
-        "• <code>/id</code> — شناسهٔ کاربر و گفتگو\n"
-        "• در گروه، «پنل» یا «راهنما» — پنل و راهنمای همان گروه\n\n"
-        "👥 <b>دعوت دوستان:</b> از بخش «زیرمجموعه‌گیری» لینک اختصاصی بگیر؛ پاداش فقط طبق شرایط و تنظیمات فعلی ربات ثبت می‌شود.\n\n"
-        "🔒 <b>شفاف و امن:</b> امکانات گروه به مجوز نصب، دسترسی ادمین ربات و مجوزهای تلگرام وابسته‌اند. تغییرات مدیریتی فقط برای مدیران مجاز همان گروه در دسترس است. قابلیت‌های وابسته به سرویس بیرونی، مانند هوش مصنوعی یا بازی وب، تنها در صورت تنظیم بودن سرویس فعال می‌شوند.\n"
+        "🛡️ <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n"
+        "<i>امنیت، مدیریت هوشمند و ابزارهای کاربردی تلگرام</i>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "👇 از منوی شیک زیر، بخش موردنظرت رو انتخاب کن."
+        "🔐 <b>امنیت گروه:</b> ضدلینک، ضدتبلیغ، ضداسپم، ضدتکرار، کنترل فوروارد و رسانه، فیلتر شماره و کلمات، کپچا و ضدیورش؛ فعال‌سازی تابع تنظیمات و دسترسی‌های تلگرام است.\n"
+        "👥 <b>مدیریت اعضا:</b> اخطار، سکوت/رفع سکوت، بن/رفع بن، اخراج، اطلاعات کاربر، شناسه و مقام، شمارش دعوت، سنجاق/لغو سنجاق و حذف پیام.\n"
+        "👋 <b>ورود و خروج:</b> خوشامد و خداحافظی قابل‌تنظیم، قوانین، جوین اجباری کانال، اد اجباری با لینک دعوت اختصاصی و کنترل ضدیورش.\n"
+        "🧰 <b>مدیریت و تنظیمات:</b> پنل گروه، تنظیمات امنیت، فیلتر کلمات، یادداشت‌ها، پاسخ خودکار، ساعت سکوت، لینک گروه، پاک‌سازی پیام‌های اخیر و گزارش آماری.\n"
+        "📊 <b>آمار:</b> اطلاعات گروه و اعضا، آمار فعالیت ۲۴ ساعته، کاربران فعال، مدیران و گزارش قابل‌خروجی در بخش‌های پشتیبانی‌شده.\n"
+        "🧪 <b>ابزارهای کاربردی:</b> تاریخ و ساعت، اکو متن، بررسی فایل از نظر نوع/اندازه و اطلاعات هش؛ این بررسی به‌تنهایی اسکن ضدویروس نیست.\n"
+        "🧠 <b>هوش مصنوعی:</b> راهنمایی و پاسخ به سؤال‌ها؛ امکانات وابسته به کلید API فقط در صورت تنظیم سرویس فعال‌اند.\n"
+        "🎨 <b>ابزارهای جانبی:</b> فونت‌های متنی، بازی‌ها، جدول امتیازها، تیکت پشتیبانی و فهرست پروکسی‌های ذخیره‌شده.\n"
+        "💳 <b>حساب و خدمات:</b> کیف پول تومانی، تاریخچه تراکنش، اشتراک، دعوت دوستان، درخواست برداشت و پنل پشتیبانی. پرداخت/برداشت تابع بررسی و تنظیمات موجود است.\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <b>شروع سریع</b>\n"
+        "/help راهنمای کامل | /panel پنل | /profile پروفایل و کیف پول | /stats آمار | /id شناسه | /ping پاسخ‌گویی | /health سلامت | /ai سؤال | /game بازی‌ها | /top امتیازها | /cancel لغو\n"
+        "👥 <b>در گروه:</b> «پنل»، «راهنما»، «قوانین»، «آمار» یا /mylink (در صورت فعال بودن اد اجباری). برای اقدام روی عضو، فرمان مدیریتی را روی پیام او ریپلای کن.\n"
+        "🔒 فرمان‌های مدیریتی فقط با مجوز لازم اجرا می‌شوند؛ امکانات خارجی یا وابسته به دسترسی ممکن است نیاز به تنظیم جداگانه داشته باشند.\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👇 از منوی زیر بخش موردنظرت را انتخاب کن."
     )
 
 
 def group_start_guide(chat_title="گروه"):
     return (
-        f"🛡️ <b>راهنمای MASIH GUARD S1000+ برای {esc(chat_title or 'گروه')}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "👋 سلام! برای مدیریت گروه، ربات باید مدیر گروه باشد و مجوزهای لازم را داشته باشد.\n\n"
-        "🔐 تنظیمات پنل و مدیریت مالک در گفت‌وگوی خصوصی ربات انجام می‌شود؛ پیام‌های پنل در گروه منتشر نمی‌شوند.\n"
-        "🧰 مدیران گروه می‌توانند از فرمان‌های فارسی پشتیبانی‌شده استفاده کنند؛ برای اقدام روی یک عضو، روی پیام همان عضو ریپلای کنید.\n"
-        "📜 برای دیدن قوانین بنویسید «قوانین»، برای آمار «آمار»، و برای راهنمای فرمان‌ها «راهنما».\n"
-        "📢 اگر جوین اجباری روشن باشد، باید عضو کانال‌های نمایش‌داده‌شده باشید. برای لینک دعوت اختصاصی، در گروه /mylink را بزنید (در صورت فعال بودن اد اجباری).\n"
-        "⚠️ بعضی امکانات فقط با مجوز فعال گروه و دسترسی ادمین ربات کار می‌کنند."
+        f"🛡️ <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n"
+        f"📍 راهنمای سریع: {esc(chat_title or 'گروه')}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔐 <b>امنیت:</b> ضدلینک، ضدتبلیغ، ضداسپم/تکرار، کنترل فوروارد و رسانه، فیلتر کلمات/شماره، کپچا و ضدیورش (طبق تنظیمات فعال).\n"
+        "👥 <b>اعضا:</b> اخطار، سکوت/رفع سکوت، اخراج، بن/رفع بن، اطلاعات و شناسه، شمارش دعوت، سنجاق/لغو سنجاق و حذف پیام.\n"
+        "👋 <b>ورود:</b> خوشامد/خداحافظی، قوانین، جوین اجباری کانال و اد اجباری با لینک اختصاصی.\n"
+        "⚙️ <b>مدیریت:</b> پنل و تنظیمات، فیلتر کلمات، یادداشت، پاسخ خودکار، ساعت سکوت، لینک گروه و پاک‌سازی پیام‌های اخیر.\n"
+        "📊 <b>آمار:</b> /groupinfo /members /admins /activity /stats24 /topactive /exportstats\n"
+        "🧰 <b>ابزارها:</b> /time /date /echo متن /id /ping /help\n"
+        "👮 <b>فرمان‌های عضو</b> (روی پیام او ریپلای کن): /warn /mute /unmute /kick /ban /unban /delete /pin /unpin\n"
+        "🛠️ <b>تنظیم مدیر:</b> /setrules /setwelcome /setfarewell /filteradd /filterdel /filterlist /noteadd /notedel /setquiet /cleanlast\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📢 اگر جوین اجباری فعال است، عضو کانال‌های تعیین‌شده شو و عضویت را بررسی کن. برای لینک دعوت در حالت اد اجباری از /mylink استفاده کن.\n"
+        "⚠️ ربات باید مدیر گروه باشد و مجوز لازم را داشته باشد؛ اقدام مدیریتی فقط برای مدیر مجاز همان گروه انجام می‌شود. برای فهرست کامل‌تر: /help"
     )
 
 
@@ -422,7 +422,7 @@ SECTIONS = {
 }
 
 PUBLIC_FEATURES = (
-    "🌌 <b>MASIH GUARD S1000+</b>\n"
+    "🌌 <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n"
     "<i>امنیت گروه، مدیریت هوشمند و ابزارهای کاربردی تلگرام</i>\n"
     "━━━━━━━━━━━━━━━━━━━━\n"
     "🛡️ <b>امنیت:</b> ضدلینک، ضدتبلیغ، ضداسپم، ضدتکرار، کنترل فوروارد و رسانه، فیلتر شماره، کپچا و ضدیورش.\n"
@@ -653,7 +653,7 @@ def send_group_panel(chat_id, message_id=None, user_id=None, section="home"):
         intro = "تنظیمات این بخش را از دکمه‌های زیر مدیریت کن."
     status = (f"📢 جوین اجباری: {'روشن' if settings.get('force_join_on') else 'خاموش'} | "
               f"➕ اد اجباری: {'روشن (' + str(settings.get('force_add_count', 3)) + ')' if settings.get('force_add_on') else 'خاموش'}\n")
-    text = ("🛡️ <b>MASIH GUARD S1000+ — پنل مدیریت گروه</b>\n"
+    text = ("🛡️ <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈 — پنل مدیریت گروه</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"<b>{esc(heading)}</b>\n{intro}\n\n{status}"
             f"📜 مجوز گروه: {'🟢 فعال' if is_group_licensed(chat_id) else '🟠 غیرفعال؛ بعضی عملیات حفاظتی اجرا نمی‌شوند'}\n"
@@ -931,7 +931,7 @@ def shop_text(uid):
     status_icon = "🟢" if sub.get("expires") else "⚪"
     lines = [
         "💠 <b>مرکز اشتراک</b>",
-        "<b>MASIH GUARD S1000+</b>",
+        "<b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"{status_icon} وضعیت: <b>{'فعال' if sub.get('expires') else 'غیرفعال'}</b>",
         f"💳 موجودی کیف پول: <b>{wallet(uid):,} تومان</b>",
@@ -2192,7 +2192,7 @@ def welcome_card(chat_id, member):
     date_text = persian_digits(stamp.strftime("%Y-%m-%d"))
     time_text = persian_digits(stamp.strftime("%H:%M:%S"))
     count_text = persian_digits(count) if isinstance(count, int) else str(count)
-    return ("⚡ <b>ＭＡＳＩＨ ＧＵＡＲＤ S1000+</b> ⚡\n"
+    return ("⚡ <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b> ⚡\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🏷️ <b>گروه:</b> {esc(group_title)}\n"
             "🚀 <b>عضو جدید وارد شد!</b>\n\n"
@@ -2204,7 +2204,7 @@ def welcome_card(chat_id, member):
             f"👥 <b>تعداد اعضا:</b> {count_text}\n\n"
             "🛡️ <b>سامانهٔ امنیت گروه فعال است</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "<i>قدرت مدیریت گروه با MASIH GUARD S1000+</i>")
+            "<i>قدرت مدیریت گروه با مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</i>")
 
 
 @bot.my_chat_member_handler()
@@ -2314,7 +2314,7 @@ def farewell_member(message):
         try:
             custom = s.get("farewell_text", DEFAULT_GROUP["farewell_text"])
             body = esc(custom).replace("{name}", f'<a href="tg://user?id={int(member.id)}">{esc(member.first_name or "دوست ما")}</a>')
-            bot.send_message(message.chat.id, "🌙 <b>MASIH GUARD S1000+</b>\n━━━━━━━━━━━━━━\n👋 " + body)
+            bot.send_message(message.chat.id, "🌙 <b>مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n━━━━━━━━━━━━━━\n👋 " + body)
         except Exception as e: print("Farewell error:",repr(e))
     if member:
         gs=DATA.setdefault("group_stats",{}).setdefault(str(message.chat.id),{"messages":0,"blocked":0,"joins":0,"leaves":0})
@@ -2691,39 +2691,37 @@ def ai_command(message):
 def help_command(message):
     if getattr(message.chat, "type", "private") in ("group", "supergroup"):
         bot.reply_to(message,
-            "📚 <b>راهنمای سریع گروه | MASIH GUARD</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🧰 <b>عمومی:</b> «پنل»، «راهنما»، «قوانین»، «آمار»، «آیدی»، «پینگ»\n"
-            "👮 <b>مدیریت عضو:</b> روی پیام عضو ریپلای کن و سپس «اخطار»، «سکوت»، «رفع سکوت»، «بن»، «رفع بن» یا «اخراج» را بنویس.\n"
-            "🛡️ <b>امنیت:</b> «قفل لینک»، «قفل تبلیغ»، «ضد اسپم روشن»، «ضدتکرار روشن»، «قفل فوروارد» و فرمان‌های پشتیبانی‌شدهٔ مشابه.\n"
-            "📢 <b>جوین اجباری:</b> مدیر از پنل گروه، کانال‌های لازم را تنظیم می‌کند؛ عضو باید عضو همهٔ کانال‌ها شود و «بررسی عضویت» را بزند.\n"
-            "➕ <b>اد اجباری:</b> اگر روشن باشد، عضو با /mylink لینک اختصاصی می‌گیرد؛ فقط ورودهای ثبت‌شده با آن لینک شمرده می‌شوند.\n"
-            "🧠 برای پرسش، بنویس «ربات [سؤالت]». برای فهرست بیشتر بنویس «دستورات کامل».\n\n"
-            "🔒 فرمان مدیریتی فقط با مجوز مدیر گروه و دسترسی لازم ربات اجرا می‌شود؛ بعضی قابلیت‌ها به مجوز نصب وابسته‌اند.")
+            "📚 <b>راهنمای مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔎 <b>اطلاعات:</b> /groupinfo /members /admins /time /date /myrank /invitecount /activity /settings /rules /chatid /userid /whois /botinfo /uptime\n"
+            "📊 <b>آمار:</b> /stats /stats24 /topactive /exportstats\n"
+            "👮 <b>مدیریت عضو</b> (روی پیام عضو ریپلای کن): /warn /mute /unmute /kick /ban /unban\n"
+            "🧹 <b>پیام‌ها:</b> /delete /pin /unpin /cleanlast\n"
+            "🛡️ <b>امنیت و فیلتر:</b> «قفل لینک»، «قفل تبلیغ»، «ضد اسپم روشن»، «ضدتکرار روشن»، «قفل فوروارد»؛ همچنین /filteradd /filterdel /filterlist\n"
+            "👋 <b>خوشامد و تنظیمات:</b> /setrules /setwelcome /setfarewell /welcomeon /welcomeoff /farewellon /farewelloff /setquiet /quieton /quietoff\n"
+            "🗒️ <b>ابزارهای مدیر:</b> /noteadd /notedel /note /autoreplyadd /autoreplydel /echo متن /scanfile (بررسی پایهٔ فایل، نه تضمین ضدویروس)\n"
+            "📢 <b>عضویت اجباری:</b> کانال‌ها از پنل گروه تنظیم می‌شوند؛ در صورت فعال بودن، عضویت بررسی می‌شود. /mylink لینک دعوت اختصاصی را می‌دهد.\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔒 برای اقدامات مدیریتی روی پیام کاربر ریپلای کن؛ مدیر بودن درخواست‌دهنده و دسترسی ربات بررسی می‌شود. بعضی امکانات وابسته به مجوز نصب یا تنظیم سرویس هستند.")
     else:
         bot.send_message(message.chat.id,
-            "📚 <b>راهنمای MASIH GUARD S1000+</b>\n"
+            "📚 <b>راهنمای کامل | مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🚀 <b>فرمان‌های اصلی</b>\n"
-            "• <code>/start</code> — منوی اصلی و معرفی امکانات\n"
-            "• <code>/help</code> — همین راهنما\n"
-            "• <code>/profile</code> — پروفایل، موجودی و دعوت‌ها\n"
-            "• <code>/top</code> — جدول امتیازهای بازی\n"
-            "• <code>/game</code> — فهرست بازی‌های مرورگری\n"
-            "• <code>/stats</code> — آمار ربات یا گروه\n"
-            "• <code>/ai متن سؤال</code> — پرسش از دستیار\n"
-            "• <code>/ping</code> — بررسی پاسخ‌گویی\n"
-            "• <code>/health</code> یا <code>/diagnose</code> — گزارش سلامت (جزئیات فقط برای مالک)\n"
-            "• <code>/version</code> — نسخهٔ ربات\n"
-            "• <code>/id</code> — شناسهٔ کاربر و گفتگو\n"
-            "• <code>/cancel</code> — لغو عملیات در انتظار\n"
-            "• <code>/panel</code> — پنل مالک (فقط مالک اصلی) یا پنل گروه در گروه\n\n"
-            "💳 <b>منوی کاربری:</b> کیف پول، خرید اشتراک، زیرمجموعه‌گیری، تراکنش‌ها، درخواست برداشت، تیکت پشتیبانی و هوش مصنوعی.\n"
-            "👥 <b>در گروه:</b> «پنل»، «راهنما»، «قوانین»، «آمار»، «دستورات کامل» و فرمان‌های مدیریتی پشتیبانی‌شده.\n"
-            "📢 <b>جوین اجباری:</b> از پنل گروه کانال‌ها را تنظیم کن؛ عضویت هر کاربر با Telegram بررسی می‌شود.\n"
-            "➕ <b>اد اجباری:</b> تعداد دعوت را تنظیم کن؛ کاربران باید در گروه /mylink بزنند تا لینک شخصی بگیرند.\n"
-            "🔒 امکانات وابسته به مجوز نصب، تنظیمات سرویس و دسترسی‌های تلگرام هستند.",
-            reply_markup=public_keyboard())
+            "/start — معرفی و منوی اصلی | /help — همین راهنما | /panel — پنل مالک/گروه | /profile — پروفایل و کیف پول\n"
+            "/stats — آمار | /id — شناسه | /ping — پاسخ‌گویی | /health یا /diagnose — سلامت | /version — نسخه | /cancel — لغو\n"
+            "/ai متن سؤال — دستیار هوشمند | /game — بازی‌ها | /top — جدول امتیازها\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🛡️ <b>امنیت گروه:</b> ضدلینک، ضدتبلیغ، ضداسپم و تکرار، کنترل فوروارد و رسانه، فیلتر شماره/کلمات، کپچا و ضدیورش؛ تنظیمات در پنل گروه و از طریق فرمان‌های پشتیبانی‌شده.\n"
+            "👥 <b>اعضا:</b> اخطار، سکوت/رفع سکوت، اخراج، بن/رفع بن، اطلاعات و مقام کاربر، شمارش دعوت، سنجاق/لغو سنجاق و حذف پیام.\n"
+            "👋 <b>ورود و قوانین:</b> خوشامد و خداحافظی، متن قابل‌تنظیم، قوانین، جوین اجباری کانال و اد اجباری با لینک دعوت اختصاصی.\n"
+            "⚙️ <b>مدیریت:</b> فیلتر کلمات، یادداشت، پاسخ خودکار، ساعت سکوت، پاک‌سازی پیام‌های اخیر، آمار فعالیت و گزارش خروجی.\n"
+            "🎨 <b>ابزارها:</b> فونت متنی، بازی، تیکت پشتیبانی، تاریخ/ساعت، اکو متن و بررسی پایهٔ اطلاعات فایل.\n"
+            "💳 <b>خدمات کاربری:</b> کیف پول تومانی، تراکنش‌ها، اشتراک، دعوت دوستان و درخواست برداشت؛ شرایط و وضعیت مالی از پنل و سوابق قابل بررسی است.\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "👥 <b>در گروه:</b> «پنل»، «راهنما»، «قوانین»، «آمار»؛ فرمان‌های مدیریتی باید در گروه اجرا شوند و برای عملیات روی عضو، روی پیام او ریپلای کن.\n"
+            "🔐 امکانات به مجوز نصب، تنظیمات و دسترسی‌های واقعی تلگرام وابسته‌اند؛ سرویس‌های خارجی فقط پس از پیکربندی کار می‌کنند.",
+            reply_markup=public_keyboard(), disable_web_page_preview=True)
 
 
 @bot.message_handler(commands=["profile", "me"])
@@ -3838,6 +3836,327 @@ def private_text_handler(message):
     except Exception as e:
         print("Private action error:",repr(e)); bot.send_message(uid,"⚠️ عملیات ناموفق بود؛ دسترسی ربات و اطلاعات واردشده را بررسی کن.")
 
+# ---------------- Expanded group utilities and moderation commands ----------------
+def _feature_admin(message):
+    """Fail-closed admin check for commands that change a group."""
+    uid = int(getattr(getattr(message, "from_user", None), "id", 0) or 0)
+    if getattr(getattr(message, "chat", None), "type", "") not in ("group", "supergroup"):
+        bot.reply_to(message, "این دستور را داخل گروه اجرا کن.")
+        return False
+    if not is_group_admin(message.chat.id, uid):
+        bot.reply_to(message, "⛔ این دستور فقط برای مدیران همان گروه است.")
+        return False
+    if not bot_has_group_permission(message.chat.id, "can_delete_messages"):
+        # Non-destructive commands are still allowed; permission-specific checks happen below.
+        pass
+    return True
+
+
+def _feature_reply_target(message):
+    reply = getattr(message, "reply_to_message", None)
+    user = getattr(reply, "from_user", None) if reply else None
+    if not user or getattr(user, "is_bot", False):
+        return None
+    return user
+
+
+@bot.message_handler(commands=[
+    "time", "date", "echo", "groupinfo", "members", "admins", "link", "newlink",
+    "myrank", "invitecount", "activity", "settings", "ruleset", "uptime", "chatid",
+    "userid", "botinfo", "whois", "delete", "pin", "unpin", "mute", "unmute",
+    "kick", "ban", "unban", "warn", "cleanlast", "scanfile", "exportstats", "rules",
+    "stats24", "topactive", "filteradd", "filterdel", "filterlist", "noteadd", "notedel",
+    "note", "setwelcome", "setfarewell", "welcomeon", "welcomeoff", "farewellon", "farewelloff",
+    "quieton", "quietoff", "setquiet", "autoreplyadd", "autoreplydel"
+])
+def expanded_feature_commands(message):
+    """Practical group commands; all state-changing actions check permissions first."""
+    try:
+        raw = (getattr(message, "text", "") or "").strip()
+        parts = raw.split(maxsplit=1)
+        command = parts[0].split("@", 1)[0].lstrip("/").casefold()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        chat = message.chat
+        uid = int(getattr(getattr(message, "from_user", None), "id", 0) or 0)
+        group_chat = getattr(chat, "type", "") in ("group", "supergroup")
+
+        if command == "time":
+            bot.reply_to(message, "🕒 <b>ساعت محلی ربات</b>\n" + esc(local_now().strftime("%H:%M:%S")) + f"\nمنطقهٔ زمانی: {esc(TIMEZONE_NAME)}")
+        elif command == "date":
+            dt = local_now()
+            bot.reply_to(message, "📅 <b>تاریخ</b>\n" + esc(dt.strftime("%Y-%m-%d")) + "\n" + esc(dt.strftime("%A")))
+        elif command == "echo":
+            if not arg:
+                bot.reply_to(message, "قالب: /echo متن")
+            elif len(arg) > 1000:
+                bot.reply_to(message, "حداکثر طول متن اکو ۱۰۰۰ نویسه است.")
+            else:
+                bot.reply_to(message, "🔊 " + esc(arg))
+        elif command == "chatid":
+            bot.reply_to(message, f"🆔 شناسهٔ گفتگو: <code>{chat.id}</code>")
+        elif command == "userid":
+            target = _feature_reply_target(message)
+            target_id = target.id if target else uid
+            bot.reply_to(message, f"🆔 شناسهٔ کاربر: <code>{target_id}</code>")
+        elif command == "uptime":
+            seconds = max(0, int(time.time() - STARTED_AT))
+            days, rem = divmod(seconds, 86400); hours, rem = divmod(rem, 3600); minutes, secs = divmod(rem, 60)
+            bot.reply_to(message, f"⏱ مدت فعالیت این اجرا: {days} روز، {hours} ساعت، {minutes} دقیقه و {secs} ثانیه")
+        elif command == "botinfo":
+            bot.reply_to(message, f"🛡️ <b>{esc(BRAND)}</b>\nنسخه: {esc(VERSION)}\nوضعیت: پاسخ‌گو\nهوش مصنوعی: {'تنظیم شده' if AI_API_KEY else 'نیازمند تنظیم کلید'}")
+        elif command == "groupinfo":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            try: count = bot.get_chat_member_count(chat.id)
+            except Exception: count = "نامشخص"
+            cfg = get_group_settings(chat.id)
+            licensed = "فعال" if is_group_licensed(chat.id) else "غیرفعال"
+            bot.reply_to(message, f"📋 <b>اطلاعات گروه</b>\nنام: {esc(getattr(chat, 'title', 'گروه'))}\nشناسه: <code>{chat.id}</code>\nاعضا: {esc(count)}\nمجوز ربات: {licensed}\nضدلینک: {'روشن' if cfg.get('anti_link') else 'خاموش'}\nضداسپم: {'روشن' if cfg.get('anti_spam') else 'خاموش'}")
+        elif command == "members":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            try: count = bot.get_chat_member_count(chat.id)
+            except Exception: count = "تلگرام تعداد را برنگرداند"
+            bot.reply_to(message, f"👥 تعداد اعضای گروه: <b>{esc(count)}</b>")
+        elif command == "admins":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            admins = bot.get_chat_administrators(chat.id)
+            rows = []
+            for item in admins[:50]:
+                u = item.user
+                name = (getattr(u, "first_name", "") or "") + (" @" + u.username if getattr(u, "username", None) else "")
+                rows.append("• " + esc(name or str(u.id)) + f" — <code>{u.id}</code>")
+            bot.reply_to(message, "👑 <b>مدیران گروه</b>\n" + ("\n".join(rows) if rows else "فهرست خالی است."))
+        elif command == "link":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            if not _feature_admin(message): return
+            try:
+                current_chat = bot.get_chat(chat.id)
+                link = getattr(current_chat, "invite_link", None)
+            except Exception:
+                link = None
+            if not link:
+                bot.reply_to(message, "⚠️ لینک اصلی در دسترس نیست؛ مدیر گروه می‌تواند /newlink را اجرا کند.")
+                return
+            bot.reply_to(message, "🔗 لینک دعوت گروه:\n" + esc(link))
+        elif command == "newlink":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            if not _feature_admin(message): return
+            link = bot.export_chat_invite_link(chat.id)
+            add_log("group_invite_link_refreshed", chat.id, uid, "لینک اصلی دعوت تازه‌سازی شد")
+            bot.reply_to(message, "♻️ لینک اصلی دعوت تازه شد. اگر لینک قبلی لینک اصلی گروه بوده، دیگر معتبر نیست:\n" + esc(link))
+        elif command == "myrank":
+            target = _feature_reply_target(message)
+            target_id = target.id if target else uid
+            try:
+                member = bot.get_chat_member(chat.id, target_id)
+                status_map = {"creator": "مالک گروه", "administrator": "مدیر", "member": "عضو", "restricted": "محدودشده", "left": "خارج‌شده", "kicked": "مسدود"}
+                status = status_map.get(getattr(member, "status", ""), getattr(member, "status", "نامشخص"))
+                name = getattr(target, "first_name", "کاربر") if target else getattr(getattr(message, "from_user", None), "first_name", "کاربر")
+                bot.reply_to(message, f"👤 {esc(name)}\nشناسه: <code>{target_id}</code>\nمقام در گروه: <b>{esc(status)}</b>")
+            except Exception:
+                bot.reply_to(message, "⚠️ نتوانستم مقام این کاربر را از تلگرام دریافت کنم.")
+        elif command == "invitecount":
+            target = _feature_reply_target(message)
+            target_id = target.id if target else uid
+            cfg = get_group_settings(chat.id) if group_chat else {}
+            credits = cfg.get("force_add_credits", {}) if isinstance(cfg, dict) else {}
+            count = int(credits.get(str(target_id), DATA.setdefault("force_add_credits", {}).get(str(target_id), 0)) or 0)
+            bot.reply_to(message, f"➕ دعوت‌های ثبت‌شده برای <code>{target_id}</code>: <b>{count}</b>\nاین عدد فقط دعوت‌هایی را نشان می‌دهد که سامانهٔ دعوت ربات ثبت کرده است.")
+        elif command == "activity":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            key = str(chat.id); now = time.time()
+            rows = DATA.setdefault("message_history", {}).get(key, [])
+            recent = [r for r in rows if now - float(r.get("time", 0) or 0) <= 86400]
+            by_user = {}
+            for r in recent:
+                u = str(r.get("user_id", 0)); by_user[u] = by_user.get(u, 0) + 1
+            top = sorted(by_user.items(), key=lambda x: x[1], reverse=True)[:10]
+            lines = [f"• <code>{u}</code> — {n} پیام" for u, n in top]
+            bot.reply_to(message, f"📊 <b>فعالیت ثبت‌شدهٔ ۲۴ ساعت اخیر</b>\nپیام‌های ثبت‌شده: {len(recent)}\nکاربران فعال در داده‌های موجود: {len(by_user)}\n" + ("\n".join(lines) if lines else "هنوز دادهٔ کافی ثبت نشده است.") + "\n⚠️ این گزارش فقط از تاریخچهٔ ذخیره‌شدهٔ ربات استفاده می‌کند و ممکن است کامل نباشد.")
+        elif command == "settings":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            cfg = get_group_settings(chat.id)
+            labels = {"anti_link":"ضدلینک", "anti_ads":"ضدتبلیغ", "anti_spam":"ضداسپم", "anti_repeat":"ضدتکرار", "anti_forward":"ضدفوروارد", "media_lock":"قفل رسانه", "lock_photos":"قفل عکس", "lock_videos":"قفل ویدئو", "lock_files":"قفل فایل", "lock_stickers":"قفل استیکر", "lock_voice":"قفل ویس", "force_join_on":"جوین اجباری", "force_add_on":"اد اجباری", "welcome_on":"خوشامدگویی", "captcha_on":"کپچا"}
+            body = "\n".join(f"• {label}: {'روشن' if cfg.get(key) else 'خاموش'}" for key, label in labels.items())
+            bot.reply_to(message, "⚙️ <b>تنظیمات فعلی گروه</b>\n" + body)
+        elif command == "rules":
+            cfg = get_group_settings(chat.id) if group_chat else {}
+            bot.reply_to(message, "📜 <b>قوانین گروه</b>\n" + esc(cfg.get("rules", "قوانینی ثبت نشده است.")))
+        elif command == "ruleset":
+            if not group_chat or not _feature_admin(message): return
+            if not arg:
+                bot.reply_to(message, "قالب: /ruleset متن قوانین"); return
+            cfg = get_group_settings(chat.id); cfg["rules"] = arg[:3500]; save_data()
+            add_log("group_rules_updated", chat.id, uid, "قوانین گروه به‌روزرسانی شد")
+            bot.reply_to(message, "✅ قوانین گروه ذخیره شد.")
+        elif command == "whois":
+            target = _feature_reply_target(message)
+            if not target:
+                bot.reply_to(message, "برای استفاده از /whois روی پیام کاربر ریپلای کن."); return
+            try: member = bot.get_chat_member(chat.id, target.id); status = getattr(member, "status", "نامشخص")
+            except Exception: status = "نامشخص"
+            bot.reply_to(message, f"👤 <b>اطلاعات کاربر</b>\nنام: {esc(getattr(target, 'first_name', ''))}\nنام خانوادگی: {esc(getattr(target, 'last_name', ''))}\nنام کاربری: @{esc(getattr(target, 'username', '') or 'ندارد')}\nشناسه: <code>{target.id}</code>\nوضعیت تلگرام: {esc(status)}")
+        elif command in ("delete", "pin", "unpin"):
+            if not group_chat or not _feature_admin(message): return
+            reply = getattr(message, "reply_to_message", None)
+            if command == "delete":
+                if not reply: bot.reply_to(message, "برای حذف، روی پیام موردنظر ریپلای کن."); return
+                bot.delete_message(chat.id, reply.message_id); bot.reply_to(message, "🗑 پیام حذف شد.")
+            elif command == "pin":
+                if not reply: bot.reply_to(message, "برای سنجاق، روی پیام موردنظر ریپلای کن."); return
+                bot.pin_chat_message(chat.id, reply.message_id, disable_notification=True); bot.reply_to(message, "📌 پیام سنجاق شد.")
+            else:
+                bot.unpin_chat_message(chat.id); bot.reply_to(message, "📌 سنجاق پیام برداشته شد.")
+        elif command in ("mute", "unmute", "kick", "ban", "unban", "warn"):
+            if not group_chat or not _feature_admin(message): return
+            target = _feature_reply_target(message)
+            target_id = target.id if target else None
+            if not target_id and command == "unban" and arg.isdigit(): target_id = int(arg)
+            if not target_id:
+                bot.reply_to(message, "برای این دستور روی پیام کاربر ریپلای کن؛ برای /unban می‌توانی شناسه بدهی."); return
+            action = "warn" if command == "warn" else command
+            result = moderate_member(action, chat.id, target_id)
+            bot.reply_to(message, esc(result))
+        elif command == "cleanlast":
+            if not group_chat or not _feature_admin(message): return
+            try: amount = int(arg or "20")
+            except ValueError: amount = 0
+            if not 1 <= amount <= 100:
+                bot.reply_to(message, "تعداد باید بین ۱ تا ۱۰۰ باشد."); return
+            rows = DATA.setdefault("message_history", {}).get(str(chat.id), [])[-amount:]
+            deleted = 0
+            for row in reversed(rows):
+                try: bot.delete_message(chat.id, int(row["message_id"])); deleted += 1
+                except Exception: pass
+            bot.reply_to(message, f"🧹 {deleted} پیام از تاریخچهٔ در دسترس حذف شد.")
+            add_log("messages_cleaned", chat.id, uid, str(deleted))
+        elif command == "exportstats":
+            if not group_chat or not _feature_admin(message): return
+            key = str(chat.id)
+            payload = {"group_id": chat.id, "group_title": getattr(chat, "title", ""), "generated_at": now_text(), "group_stats": DATA.setdefault("group_stats", {}).get(key, {}), "recent_message_history": DATA.setdefault("message_history", {}).get(key, [])[-300:]}
+            f = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")); f.name = "group_report.json"
+            bot.send_document(chat.id, f, caption="📊 گزارش قابل‌دانلود گروه (شامل شناسه‌های پیام/کاربر در تاریخچهٔ موجود)")
+        elif command in ("stats24", "topactive"):
+            # Alias to the bounded 24-hour activity report; history completeness is explicitly disclosed.
+            rows = DATA.setdefault("message_history", {}).get(str(chat.id), []) if group_chat else []
+            now = time.time(); counts = {}
+            for row in rows:
+                if now - float(row.get("time", 0) or 0) <= 86400:
+                    key = str(row.get("user_id", 0)); counts[key] = counts.get(key, 0) + 1
+            ordered = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]
+            summary = "\n".join(f"{i}. <code>{esc(user_id)}</code> — {count} پیام" for i, (user_id, count) in enumerate(ordered, 1))
+            bot.reply_to(message, "📊 <b>فعال‌ترین کاربران در داده‌های ثبت‌شدهٔ ۲۴ ساعت اخیر</b>\n" + (summary or "داده‌ای برای نمایش وجود ندارد.") + "\n⚠️ این فهرست بر اساس تاریخچهٔ محدود ربات است، نه آمار کامل تلگرام.")
+        elif command == "filterlist":
+            cfg = get_group_settings(chat.id) if group_chat else {}
+            words = cfg.get("bad_words", [])
+            bot.reply_to(message, "🚫 <b>کلمات فیلترشده</b>\n" + ("\n".join("• " + esc(w) for w in words[:100]) if words else "فهرست خالی است."))
+        elif command in ("filteradd", "filterdel"):
+            if not group_chat or not _feature_admin(message): return
+            if not arg or len(arg) > 100:
+                bot.reply_to(message, f"قالب: /{command} کلمه یا عبارت (حداکثر ۱۰۰ نویسه)"); return
+            cfg = get_group_settings(chat.id); words = cfg.setdefault("bad_words", [])
+            if command == "filteradd":
+                if arg.casefold() not in [str(w).casefold() for w in words]: words.append(arg)
+                action = "added"
+                response = "✅ عبارت به فهرست فیلتر اضافه شد."
+            else:
+                old = len(words); words[:] = [w for w in words if str(w).casefold() != arg.casefold()]
+                action = "removed"; response = "✅ عبارت از فهرست فیلتر حذف شد." if len(words) < old else "ℹ️ این عبارت در فهرست نبود."
+            save_data(); add_log("group_filter_" + action, chat.id, uid, arg[:100]); bot.reply_to(message, response)
+        elif command == "noteadd":
+            if not group_chat or not _feature_admin(message): return
+            if "|" not in arg:
+                bot.reply_to(message, "قالب: /noteadd نام | متن یادداشت"); return
+            name, value = [x.strip() for x in arg.split("|", 1)]
+            if not re.fullmatch(r"[\w\u0600-\u06ff-]{1,40}", name) or not value:
+                bot.reply_to(message, "نام باید ۱ تا ۴۰ نویسه باشد و متن یادداشت خالی نباشد."); return
+            get_group_settings(chat.id).setdefault("notes", {})[name.lower()] = value[:2000]
+            save_data(); bot.reply_to(message, "✅ یادداشت ذخیره شد؛ با #نام می‌توان آن را فراخوانی کرد.")
+        elif command == "notedel":
+            if not group_chat or not _feature_admin(message): return
+            name = arg.casefold().lstrip("#")
+            notes = get_group_settings(chat.id).setdefault("notes", {})
+            existed = notes.pop(name, None); save_data()
+            bot.reply_to(message, "✅ یادداشت حذف شد." if existed is not None else "ℹ️ یادداشتی با این نام پیدا نشد.")
+        elif command == "note":
+            if not group_chat:
+                bot.reply_to(message, "این دستور را داخل گروه اجرا کن."); return
+            name = arg.casefold().lstrip("#")
+            notes = get_group_settings(chat.id).setdefault("notes", {})
+            if name:
+                value = notes.get(name)
+                bot.reply_to(message, "📝 <b>یادداشت</b>\n" + esc(value) if value is not None else "یادداشت پیدا نشد.")
+            else:
+                bot.reply_to(message, "📝 <b>یادداشت‌های گروه</b>\n" + ("\n".join("• #" + esc(k) for k in list(notes)[:100]) or "یادداشتی ثبت نشده است."))
+        elif command in ("setwelcome", "setfarewell"):
+            if not group_chat or not _feature_admin(message): return
+            if not arg or len(arg) > 1000:
+                bot.reply_to(message, f"قالب: /{command} متن (برای نام عضو از {{name}} استفاده کن؛ حداکثر ۱۰۰۰ نویسه)"); return
+            key = "welcome_text" if command == "setwelcome" else "farewell_text"
+            get_group_settings(chat.id)[key] = arg
+            save_data(); add_log("group_" + key + "_updated", chat.id, uid, "متن پیام گروه تغییر کرد")
+            bot.reply_to(message, "✅ متن پیام ذخیره شد.")
+        elif command in ("welcomeon", "welcomeoff", "farewellon", "farewelloff"):
+            if not group_chat or not _feature_admin(message): return
+            key = "welcome_on" if command.startswith("welcome") else "farewell_on"
+            enabled = command.endswith("on")
+            get_group_settings(chat.id)[key] = enabled; save_data()
+            bot.reply_to(message, f"✅ {'خوشامدگویی' if key == 'welcome_on' else 'پیام خداحافظی'} {'روشن' if enabled else 'خاموش'} شد.")
+        elif command in ("quieton", "quietoff", "setquiet"):
+            if not group_chat or not _feature_admin(message): return
+            cfg = get_group_settings(chat.id)
+            if command == "quietoff":
+                cfg["quiet_hours_on"] = False; save_data(); bot.reply_to(message, "✅ سکوت زمان‌بندی‌شده خاموش شد."); return
+            if command == "quieton":
+                cfg["quiet_hours_on"] = True; save_data(); bot.reply_to(message, f"🌙 سکوت زمان‌بندی‌شده روشن شد: {esc(cfg.get('quiet_start','23:00'))} تا {esc(cfg.get('quiet_end','07:00'))}"); return
+            match = re.fullmatch(r"(\d{2}:\d{2})\s*[-–]\s*(\d{2}:\d{2})", arg)
+            if not match:
+                bot.reply_to(message, "قالب: /setquiet 23:00-07:00"); return
+            try:
+                start_t = datetime.strptime(match.group(1), "%H:%M").time(); end_t = datetime.strptime(match.group(2), "%H:%M").time()
+            except ValueError:
+                bot.reply_to(message, "ساعت معتبر نیست؛ از قالب ۲۴ ساعته HH:MM استفاده کن."); return
+            cfg.update({"quiet_start": start_t.strftime("%H:%M"), "quiet_end": end_t.strftime("%H:%M"), "quiet_hours_on": True})
+            save_data(); bot.reply_to(message, "✅ بازهٔ سکوت ذخیره و فعال شد.")
+        elif command in ("autoreplyadd", "autoreplydel"):
+            if not group_chat or not _feature_admin(message): return
+            if command == "autoreplyadd":
+                if "|" not in arg:
+                    bot.reply_to(message, "قالب: /autoreplyadd کلمه کلیدی | متن پاسخ"); return
+                keyword, response = [x.strip() for x in arg.split("|", 1)]
+                if not keyword or not response:
+                    bot.reply_to(message, "کلمهٔ کلیدی و متن پاسخ هر دو لازم‌اند."); return
+                get_group_settings(chat.id).setdefault("auto_replies", {})[keyword[:80]] = response[:1500]
+                save_data(); bot.reply_to(message, "✅ پاسخ خودکار ثبت شد.")
+            else:
+                keyword = arg.strip()
+                replies = get_group_settings(chat.id).setdefault("auto_replies", {})
+                existed = replies.pop(keyword, None); save_data()
+                bot.reply_to(message, "✅ پاسخ خودکار حذف شد." if existed is not None else "ℹ️ کلمهٔ کلیدی پیدا نشد.")
+        elif command == "scanfile":
+            reply = getattr(message, "reply_to_message", None)
+            doc = getattr(reply, "document", None) if reply else None
+            if not doc:
+                bot.reply_to(message, "برای بررسی فایل، روی پیام حاوی فایل ریپلای کن و /scanfile بزن."); return
+            if int(getattr(doc, "file_size", 0) or 0) > 15 * 1024 * 1024:
+                bot.reply_to(message, "فایل بزرگ‌تر از ۱۵ مگابایت است؛ در این نسخه بررسی محلی انجام نمی‌شود."); return
+            file_info = bot.get_file(doc.file_id)
+            raw_bytes = bot.download_file(file_info.file_path)
+            import hashlib
+            digest = hashlib.sha256(raw_bytes).hexdigest()
+            bot.reply_to(message, f"🔎 <b>گزارش بررسی فایل</b>\nنام: {esc(getattr(doc, 'file_name', 'بدون نام'))}\nحجم: {len(raw_bytes):,} بایت\nSHA-256: <code>{digest}</code>\n⚠️ این فقط شناسایی نوع/هش فایل است و اسکن ضدبدافزار نیست؛ از این گزارش نمی‌توان سالم‌بودن فایل را نتیجه گرفت.")
+    except Exception as exc:
+        print("Expanded feature command error:", repr(exc))
+        try: bot.reply_to(message, "⚠️ اجرای دستور کامل نشد. دسترسی‌های ربات و گزارش خطا را بررسی کن.")
+        except Exception: pass
+
+
 # Register the group text router after command handlers so /start and /ping keep priority.
 bot.message_handler(content_types=["text"], func=lambda m: getattr(getattr(m, "chat", None), "type", "") in ("group", "supergroup"))(group_message_handler)
 
@@ -3935,7 +4254,7 @@ class _GameRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/healthz", "/health", "/ready"):
-            body = b"MASIH GUARD S1000+ is running"
+            body = "مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈 is running".encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -3965,7 +4284,7 @@ BOT_SHORT_DESCRIPTION = (
     "امنیت گروه، مدیریت اعضا، دستیار هوشمند، ابزارهای کاربردی و بازی‌های تلگرامی"
 )
 BOT_LONG_DESCRIPTION = (
-    "🛡️ MASIH GUARD S1000+ — دستیار مدیریت و امنیت تلگرام. "
+    "🛡️ مدیریت گروه | 𝑴𝒂𝒔𝒊𝒉 𝑯𝒂𝒄𝒌𝒆𝒓𝒊𝒏𝒈 — دستیار مدیریت و امنیت تلگرام. "
     "امکانات: ضدلینک و ضداسپم، کنترل رسانه و فوروارد، خوشامدگویی و کپچا، "
     "اخطار و مدیریت اعضا، قوانین و پاسخ خودکار، آمار گروه، دستیار هوشمند، "
     "تبدیل متن به فونت‌های تزئینی، تیکت پشتیبانی، بازی‌ها، کیف پول تومانی و اشتراک. "
