@@ -1,2 +1,6 @@
-pyTelegramBotAPI
-flask
+aiogram>=3.20,<4
+pyrogram>=2.0.106,<3
+tgcrypto>=1.2.5
+py-tgcalls>=2.2.0
+python-dotenv>=1.0
+yt-dlp>=2025.1.15
