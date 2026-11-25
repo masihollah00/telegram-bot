@@ -7,15 +7,20 @@ import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# --------------------------------------------------
+
+# ==================================================
 # ENVIRONMENT
-# --------------------------------------------------
+# ==================================================
 
 def env_bool(name, default=False):
     value = os.getenv(name)
+
     if value is None:
         return default
-    return value.strip().lower() in ("1", "true", "yes", "on")
+
+    return value.strip().lower() in (
+        "1", "true", "yes", "on"
+    )
 
 
 def env_list(name, default=""):
@@ -32,16 +37,18 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 if not SECRET_KEY:
     if DEBUG:
-        SECRET_KEY = "development-only-change-this-secret-key"
+        SECRET_KEY = (
+            "development-only-change-this-secret-key"
+        )
     else:
         raise RuntimeError(
             "DJANGO_SECRET_KEY must be configured in production."
         )
 
 
-# --------------------------------------------------
+# ==================================================
 # HOSTS AND SECURITY
-# --------------------------------------------------
+# ==================================================
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
@@ -75,9 +82,9 @@ SECURE_PROXY_SSL_HEADER = (
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # APPLICATIONS
-# --------------------------------------------------
+# ==================================================
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -89,12 +96,15 @@ INSTALLED_APPS = [
 
     "rest_framework",
     "corsheaders",
+
+    # JALALI COSMETICS CORE
+    "apps.core.apps.CoreConfig",
 ]
 
 
-# --------------------------------------------------
+# ==================================================
 # MIDDLEWARE
-# --------------------------------------------------
+# ==================================================
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -111,22 +121,25 @@ MIDDLEWARE = [
 ]
 
 
-# --------------------------------------------------
+# ==================================================
 # URL CONFIGURATION
-# --------------------------------------------------
+# ==================================================
 
 ROOT_URLCONF = "config.urls"
 
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 
 
-# --------------------------------------------------
+# ==================================================
 # TEMPLATES
-# --------------------------------------------------
+# ==================================================
 
 TEMPLATES = [
     {
-        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "BACKEND": (
+            "django.template.backends.django.DjangoTemplates"
+        ),
         "DIRS": [
             BASE_DIR / "templates",
         ],
@@ -143,9 +156,9 @@ TEMPLATES = [
 ]
 
 
-# --------------------------------------------------
+# ==================================================
 # DATABASE
-# --------------------------------------------------
+# ==================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -167,9 +180,9 @@ else:
     }
 
 
-# --------------------------------------------------
+# ==================================================
 # PASSWORD VALIDATION
-# --------------------------------------------------
+# ==================================================
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -193,15 +206,21 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": (
             "django.contrib.auth.password_validation."
+            "CommonPasswordValidator"
+        ),
+    },
+    {
+        "NAME": (
+            "django.contrib.auth.password_validation."
             "NumericPasswordValidator"
         ),
     },
 ]
 
 
-# --------------------------------------------------
+# ==================================================
 # INTERNATIONALIZATION
-# --------------------------------------------------
+# ==================================================
 
 LANGUAGE_CODE = "fa-ir"
 
@@ -211,9 +230,9 @@ USE_I18N = True
 USE_TZ = True
 
 
-# --------------------------------------------------
+# ==================================================
 # STATIC AND MEDIA FILES
-# --------------------------------------------------
+# ==================================================
 
 STATIC_URL = "/static/"
 
@@ -222,9 +241,18 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = []
 
 if DEBUG:
-    STATICFILES_STORAGE = (
-        "django.contrib.staticfiles.storage.StaticFilesStorage"
-    )
+    STORAGES = {
+        "default": {
+            "BACKEND": (
+                "django.core.files.storage.FileSystemStorage"
+            ),
+        },
+        "staticfiles": {
+            "BACKEND": (
+                "django.contrib.staticfiles.storage.StaticFilesStorage"
+            ),
+        },
+    }
 else:
     STORAGES = {
         "default": {
@@ -243,9 +271,9 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 
-# --------------------------------------------------
+# ==================================================
 # CORS
-# --------------------------------------------------
+# ==================================================
 
 CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS"
@@ -254,46 +282,56 @@ CORS_ALLOWED_ORIGINS = env_list(
 CORS_ALLOW_CREDENTIALS = True
 
 
-# --------------------------------------------------
+# ==================================================
 # DJANGO REST FRAMEWORK
-# --------------------------------------------------
+# ==================================================
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
+
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],
+
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ],
+
     "DEFAULT_PAGINATION_CLASS": (
         "rest_framework.pagination.PageNumberPagination"
     ),
+
     "PAGE_SIZE": 24,
 }
 
 
-# --------------------------------------------------
+# ==================================================
 # DEFAULTS
-# --------------------------------------------------
+# ==================================================
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-# --------------------------------------------------
+# ==================================================
 # BUSINESS CONFIGURATION
-# --------------------------------------------------
+# ==================================================
 
 STORE_NAME = os.getenv(
     "STORE_NAME",
     "JALALI COSMETICS"
+)
+
+STORE_SLOGAN = os.getenv(
+    "STORE_SLOGAN",
+    "BEAUTY. BUSINESS. TRUST."
 )
 
 STORE_CURRENCY = "IRR"
@@ -307,13 +345,14 @@ STORE_LANGUAGE = "fa"
 STORE_TIME_ZONE = "Asia/Tehran"
 
 
-# --------------------------------------------------
+# ==================================================
 # LOGGING
-# --------------------------------------------------
+# ==================================================
 
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+
     "formatters": {
         "verbose": {
             "format": (
@@ -323,12 +362,14 @@ LOGGING = {
             "style": "{",
         },
     },
+
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
         },
     },
+
     "root": {
         "handlers": ["console"],
         "level": os.getenv("LOG_LEVEL", "INFO"),
