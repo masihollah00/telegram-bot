@@ -1,803 +1,822 @@
+
+"use client";
+
 import Link from "next/link";
+import { useMemo, useState } from "react";
+
+type Product = {
+  id: number;
+  name: string;
+  brand: string;
+  category: string;
+  sku: string;
+  price: number;
+  available: boolean;
+  description: string;
+  symbol: string;
+};
+
+const products: Product[] = [
+  {
+    id: 1,
+    name: "کرم آبرسان و مرطوب‌کننده",
+    brand: "JALALI BEAUTY",
+    category: "مراقبت پوست",
+    sku: "JC-SK-001",
+    price: 285000,
+    available: true,
+    description: "محصول مراقبت از پوست",
+    symbol: "✧",
+  },
+  {
+    id: 2,
+    name: "شامپو تقویت‌کننده مو",
+    brand: "JALALI CARE",
+    category: "مراقبت مو",
+    sku: "JC-HR-002",
+    price: 195000,
+    available: true,
+    description: "محصول مراقبت از مو",
+    symbol: "◈",
+  },
+  {
+    id: 3,
+    name: "رژ لب مات",
+    brand: "JALALI COLOR",
+    category: "آرایشی",
+    sku: "JC-MK-003",
+    price: 320000,
+    available: false,
+    description: "محصول آرایشی",
+    symbol: "◇",
+  },
+  {
+    id: 4,
+    name: "سرم مراقبت از پوست",
+    brand: "JALALI BEAUTY",
+    category: "مراقبت پوست",
+    sku: "JC-SK-004",
+    price: 410000,
+    available: true,
+    description: "محصول مراقبت از پوست",
+    symbol: "✦",
+  },
+  {
+    id: 5,
+    name: "ماسک تقویت‌کننده مو",
+    brand: "JALALI CARE",
+    category: "مراقبت مو",
+    sku: "JC-HR-005",
+    price: 245000,
+    available: true,
+    description: "محصول مراقبت از مو",
+    symbol: "❖",
+  },
+  {
+    id: 6,
+    name: "پنکیک آرایشی",
+    brand: "JALALI COLOR",
+    category: "آرایشی",
+    sku: "JC-MK-006",
+    price: 375000,
+    available: true,
+    description: "محصول آرایشی",
+    symbol: "◉",
+  },
+];
 
 const categories = [
-  { title: "آرایش صورت", subtitle: "کرم پودر، کانسیلر و پنکک", icon: "✦" },
-  { title: "آرایش چشم", subtitle: "ریمل، خط چشم و سایه", icon: "◈" },
-  { title: "آرایش لب", subtitle: "رژ لب و محصولات مراقبتی", icon: "❋" },
-  { title: "مراقبت پوست", subtitle: "آبرسان و محصولات پوستی", icon: "◇" },
-  { title: "مراقبت مو", subtitle: "شامپو و محصولات مو", icon: "✧" },
-  { title: "عطر و خوشبوکننده", subtitle: "رایحه‌های متنوع", icon: "♢" },
+  "همه محصولات",
+  "آرایشی",
+  "مراقبت پوست",
+  "مراقبت مو",
 ];
 
-const benefits = [
-  {
-    title: "تأمین عمده",
-    description: "امکان ثبت سفارش عمده برای فروشگاه‌ها و همکاران",
-    icon: "▤",
-  },
-  {
-    title: "همکاری تجاری",
-    description: "ثبت درخواست همکاری و دریافت شرایط ویژه همکاران",
-    icon: "◇",
-  },
-  {
-    title: "مدیریت سفارش",
-    description: "پیگیری وضعیت سفارش‌ها از حساب کاربری",
-    icon: "↗",
-  },
-  {
-    title: "ارسال سراسری",
-    description: "امکان برنامه‌ریزی ارسال سفارش به سراسر ایران",
-    icon: "⌖",
-  },
-];
+function formatPrice(price: number) {
+  return new Intl.NumberFormat("fa-IR").format(price) + " تومان";
+}
 
-export default function HomePage() {
+export default function ProductsPage() {
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("همه محصولات");
+  const [availability, setAvailability] = useState("همه");
+  const [sort, setSort] = useState("newest");
+
+  const filteredProducts = useMemo(() => {
+    let result = products.filter((product) => {
+      const query = search.trim().toLowerCase();
+
+      const matchesSearch =
+        !query ||
+        product.name.toLowerCase().includes(query) ||
+        product.brand.toLowerCase().includes(query) ||
+        product.sku.toLowerCase().includes(query);
+
+      const matchesCategory =
+        category === "همه محصولات" ||
+        product.category === category;
+
+      const matchesAvailability =
+        availability === "همه" ||
+        (availability === "موجود" && product.available) ||
+        (availability === "ناموجود" && !product.available);
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesAvailability
+      );
+    });
+
+    result = [...result].sort((a, b) => {
+      if (sort === "low") return a.price - b.price;
+      if (sort === "high") return b.price - a.price;
+      if (sort === "name") return a.name.localeCompare(b.name);
+      return b.id - a.id;
+    });
+
+    return result;
+  }, [search, category, availability, sort]);
+
   return (
-    <main>
-      <div className="topbar">
-        <div className="container topbar-inner">
-          <span>مرکز تخصصی پخش محصولات آرایشی و زیبایی</span>
-          <span>BEAUTY. BUSINESS. TRUST.</span>
+    <main className="catalog-page" dir="rtl">
+      <section className="catalog-hero">
+        <div className="hero-content">
+          <span className="eyebrow">JALALI COSMETICS</span>
+          <h1>مجموعه محصولات</h1>
+          <p>
+            انتخاب محصولات آرایشی و بهداشتی با تجربه‌ای
+            حرفه‌ای برای خرید عمده
+          </p>
         </div>
+
+        <div className="hero-decoration">J</div>
+      </section>
+
+      <div className="breadcrumb">
+        <Link href="/">صفحه اصلی</Link>
+        <span>/</span>
+        <span>محصولات</span>
       </div>
 
-      <header className="site-header">
-        <div className="container header-inner">
-          <Link href="/" className="brand">
-            <span className="brand-symbol">J</span>
-            <span>
-              <strong>JALALI COSMETICS</strong>
-              <small>BEAUTY. BUSINESS. TRUST.</small>
-            </span>
-          </Link>
-
-          <nav className="main-nav">
-            <Link href="/">صفحه اصلی</Link>
-            <Link href="/products">محصولات</Link>
-            <Link href="/categories">دسته‌بندی‌ها</Link>
-            <Link href="/brands">برندها</Link>
-            <Link href="/cooperation">همکاری با ما</Link>
-            <Link href="/contact">تماس با ما</Link>
-          </nav>
-
-          <div className="header-actions">
-            <Link href="/account" className="account-link">
-              حساب کاربری
-            </Link>
-            <Link href="/cart" className="cart-link">
-              سبد خرید
-              <span>۰</span>
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      <section className="hero">
-        <div className="hero-glow" />
-        <div className="container hero-grid">
-          <div className="hero-content">
-            <span className="eyebrow">JALALI COSMETICS COLLECTION</span>
-
-            <h1>
-              زیبایی،
-              <br />
-              <span>آغاز یک تجارت</span>
-              <br />
-              حرفه‌ای است.
-            </h1>
-
-            <p>
-              مجموعه‌ای تخصصی برای تأمین محصولات آرایشی، بهداشتی و زیبایی؛
-              همراه با امکانات حرفه‌ای سفارش عمده، همکاری تجاری و مدیریت خرید.
-            </p>
-
-            <div className="hero-actions">
-              <Link href="/products" className="btn btn-primary">
-                مشاهده محصولات
-                <span>←</span>
-              </Link>
-
-              <Link href="/cooperation" className="btn btn-outline">
-                درخواست همکاری
-              </Link>
-            </div>
-
-            <div className="hero-note">
-              <span className="note-line" />
-              BEAUTY. BUSINESS. TRUST.
-            </div>
+      <section className="catalog-layout">
+        <aside className="filters">
+          <div className="filter-heading">
+            <h2>فیلتر محصولات</h2>
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setCategory("همه محصولات");
+                setAvailability("همه");
+                setSort("newest");
+              }}
+            >
+              پاک کردن
+            </button>
           </div>
 
-          <div className="hero-art">
-            <div className="hero-art-frame">
-              <div className="hero-art-inner">
-                <span className="art-caption">THE BEAUTY COLLECTION</span>
-                <div className="art-monogram">J</div>
-                <span className="art-bottom">JALALI COSMETICS</span>
-              </div>
-            </div>
-            <div className="floating-label">
-              <span>J</span>
-              <div>
-                <strong>JALALI</strong>
-                <small>BEAUTY DISTRIBUTION</small>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="benefits-section">
-        <div className="container benefits-grid">
-          {benefits.map((item) => (
-            <article className="benefit" key={item.title}>
-              <span className="benefit-icon">{item.icon}</span>
-              <div>
-                <h3>{item.title}</h3>
-                <p>{item.description}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="container">
-          <div className="section-heading">
-            <span className="eyebrow">EXPLORE CATEGORIES</span>
-            <h2>دسته‌بندی محصولات</h2>
-            <p>
-              محصولات موردنیاز کسب‌وکار خود را از دسته‌بندی‌های تخصصی پیدا کنید.
-            </p>
+          <div className="filter-group">
+            <label htmlFor="product-search">جستجوی محصول</label>
+            <input
+              id="product-search"
+              type="search"
+              placeholder="نام، برند یا کد کالا..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
           </div>
 
-          <div className="category-grid">
-            {categories.map((category, index) => (
-              <Link
-                href="/products"
-                className="category-card"
-                key={category.title}
+          <div className="filter-group">
+            <h3>دسته‌بندی</h3>
+
+            {categories.map((item) => (
+              <button
+                type="button"
+                key={item}
+                className={
+                  category === item ? "filter-option active" : "filter-option"
+                }
+                onClick={() => setCategory(item)}
               >
-                <span className="category-number">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
-                <span className="category-icon">{category.icon}</span>
-                <h3>{category.title}</h3>
-                <p>{category.subtitle}</p>
-                <span className="category-arrow">←</span>
-              </Link>
+                <span>{item}</span>
+                <span className="option-arrow">‹</span>
+              </button>
             ))}
           </div>
-        </div>
-      </section>
 
-      <section className="collection-banner">
-        <div className="container collection-content">
-          <span className="eyebrow">FOR BUSINESS PARTNERS</span>
-          <h2>تجارت زیبایی را حرفه‌ای‌تر آغاز کنید.</h2>
-          <p>
-            برای دریافت شرایط همکاری، قیمت‌گذاری ویژه و امکانات سفارش عمده،
-            درخواست همکاری خود را ثبت کنید.
-          </p>
-          <Link href="/cooperation" className="btn btn-primary">
-            شروع همکاری
-            <span>←</span>
-          </Link>
-        </div>
-      </section>
+          <div className="filter-group">
+            <h3>وضعیت موجودی</h3>
 
-      <section className="section">
-        <div className="container">
-          <div className="section-heading">
-            <span className="eyebrow">SHOPPING EXPERIENCE</span>
-            <h2>تجربه خرید حرفه‌ای</h2>
+            {["همه", "موجود", "ناموجود"].map((item) => (
+              <label className="radio-option" key={item}>
+                <input
+                  type="radio"
+                  name="availability"
+                  checked={availability === item}
+                  onChange={() => setAvailability(item)}
+                />
+                <span>{item}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="filter-note">
+            <span>✦</span>
             <p>
-              از انتخاب محصولات تا ثبت سفارش و پیگیری، همه مراحل در یک فضای
-              یکپارچه مدیریت می‌شوند.
+              قیمت‌ها و موجودی نهایی پس از اتصال فروشگاه به
+              سامانه مدیریت محصولات نمایش داده می‌شوند.
             </p>
           </div>
+        </aside>
 
-          <div className="experience-grid">
-            <article className="experience-card">
-              <span>01</span>
-              <h3>انتخاب محصولات</h3>
-              <p>مشاهده محصولات و بررسی مشخصات و وضعیت موجودی.</p>
-            </article>
-
-            <article className="experience-card">
-              <span>02</span>
-              <h3>ثبت سفارش</h3>
-              <p>افزودن محصولات به سبد خرید و تکمیل اطلاعات سفارش.</p>
-            </article>
-
-            <article className="experience-card">
-              <span>03</span>
-              <h3>پیگیری سفارش</h3>
-              <p>دسترسی به وضعیت سفارش‌ها از پنل حساب کاربری.</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <footer className="site-footer">
-        <div className="container footer-grid">
-          <div className="footer-brand">
-            <div className="brand">
-              <span className="brand-symbol">J</span>
-              <span>
-                <strong>JALALI COSMETICS</strong>
-                <small>BEAUTY. BUSINESS. TRUST.</small>
-              </span>
+        <div className="catalog-main">
+          <div className="catalog-toolbar">
+            <div>
+              <span className="toolbar-label">کاتالوگ محصولات</span>
+              <h2>محصولات پخش جلالی</h2>
+              <p>
+                {new Intl.NumberFormat("fa-IR").format(
+                  filteredProducts.length
+                )}{" "}
+                محصول در این فهرست
+              </p>
             </div>
-            <p>
-              پخش جلالی؛ همراه کسب‌وکارهای فعال در حوزه زیبایی و محصولات آرایشی.
-            </p>
+
+            <div className="sort-control">
+              <label htmlFor="sort-products">مرتب‌سازی:</label>
+              <select
+                id="sort-products"
+                value={sort}
+                onChange={(event) => setSort(event.target.value)}
+              >
+                <option value="newest">جدیدترین</option>
+                <option value="low">ارزان‌ترین</option>
+                <option value="high">گران‌ترین</option>
+                <option value="name">نام محصول</option>
+              </select>
+            </div>
           </div>
 
-          <div className="footer-column">
-            <h3>دسترسی سریع</h3>
-            <Link href="/products">محصولات</Link>
-            <Link href="/categories">دسته‌بندی‌ها</Link>
-            <Link href="/brands">برندها</Link>
-          </div>
+          {filteredProducts.length > 0 ? (
+            <div className="products-grid">
+              {filteredProducts.map((product) => (
+                <article className="product-card" key={product.id}>
+                  <Link
+                    href={`/products/${product.id}`}
+                    className="product-image"
+                    aria-label={`مشاهده ${product.name}`}
+                  >
+                    <span className="product-symbol">
+                      {product.symbol}
+                    </span>
+                    <span className="image-brand">
+                      JALALI COSMETICS
+                    </span>
+                    <span className="image-caption">
+                      BEAUTY. BUSINESS. TRUST.
+                    </span>
+                  </Link>
 
-          <div className="footer-column">
-            <h3>خدمات مشتریان</h3>
-            <Link href="/account">حساب کاربری</Link>
-            <Link href="/orders">پیگیری سفارش</Link>
-            <Link href="/cooperation">همکاری تجاری</Link>
-          </div>
+                  <div className="product-info">
+                    <div className="product-meta">
+                      <span>{product.brand}</span>
+                      <span className="product-sku">
+                        {product.sku}
+                      </span>
+                    </div>
 
-          <div className="footer-column">
-            <h3>اطلاعات</h3>
-            <Link href="/about">درباره ما</Link>
-            <Link href="/contact">تماس با ما</Link>
-            <Link href="/terms">قوانین و مقررات</Link>
-          </div>
+                    <h3>
+                      <Link href={`/products/${product.id}`}>
+                        {product.name}
+                      </Link>
+                    </h3>
+
+                    <p className="product-category">
+                      {product.category}
+                    </p>
+
+                    <div className="product-bottom">
+                      <div className="price">
+                        <strong>{formatPrice(product.price)}</strong>
+                        <small>قیمت نمونه نمایشی</small>
+                      </div>
+
+                      <span
+                        className={
+                          product.available
+                            ? "stock available"
+                            : "stock unavailable"
+                        }
+                      >
+                        {product.available ? "موجود" : "ناموجود"}
+                      </span>
+                    </div>
+
+                    <Link
+                      href={`/products/${product.id}`}
+                      className="details-button"
+                    >
+                      مشاهده جزئیات
+                      <span>←</span>
+                    </Link>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <span>⌕</span>
+              <h3>محصولی پیدا نشد</h3>
+              <p>
+                عبارت جستجو یا فیلترهای انتخاب‌شده را تغییر دهید.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  setCategory("همه محصولات");
+                  setAvailability("همه");
+                }}
+              >
+                نمایش همه محصولات
+              </button>
+            </div>
+          )}
         </div>
-
-        <div className="container footer-bottom">
-          <span>© JALALI COSMETICS — تمامی حقوق محفوظ است.</span>
-          <span>BEAUTY. BUSINESS. TRUST.</span>
-        </div>
-      </footer>
+      </section>
 
       <style jsx>{`
-        .topbar {
-          background: #151316;
-          border-bottom: 1px solid var(--border);
-          color: var(--muted);
-          font-size: 11px;
+        .catalog-page {
+          min-height: 100vh;
+          background: #0b0b0d;
+          color: #f5f1ee;
+          padding-bottom: 90px;
         }
 
-        .topbar-inner {
-          min-height: 36px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 15px;
-        }
-
-        .header-inner {
-          min-height: 88px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 25px;
-        }
-
-        .brand {
-          display: inline-flex;
-          align-items: center;
-          gap: 12px;
-          flex-shrink: 0;
-        }
-
-        .brand-symbol {
-          width: 43px;
-          height: 43px;
-          display: grid;
-          place-items: center;
-          border: 1px solid var(--rose-gold);
-          color: var(--rose-gold);
-          font-family: Georgia, serif;
-          font-size: 30px;
-        }
-
-        .brand strong,
-        .brand small {
-          display: block;
-        }
-
-        .brand strong {
-          font-size: 14px;
-          letter-spacing: 1px;
-        }
-
-        .brand small {
-          margin-top: 5px;
-          color: var(--rose-gold);
-          font-size: 8px;
-          letter-spacing: 1.5px;
-        }
-
-        .main-nav {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 22px;
-          font-size: 12px;
-          color: #d2cbca;
-        }
-
-        .main-nav a:hover,
-        .footer-column a:hover {
-          color: var(--rose-gold);
-        }
-
-        .header-actions {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          font-size: 12px;
-          white-space: nowrap;
-        }
-
-        .account-link {
-          color: var(--muted);
-        }
-
-        .cart-link {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 13px;
-          border: 1px solid var(--border);
-          border-radius: 10px;
-        }
-
-        .cart-link span {
-          color: var(--rose-gold);
-        }
-
-        .hero {
+        .catalog-hero {
+          min-height: 245px;
           position: relative;
           overflow: hidden;
-          padding: 90px 0 105px;
-          border-bottom: 1px solid var(--border);
-        }
-
-        .hero-glow {
-          position: absolute;
-          width: 550px;
-          height: 550px;
-          top: -200px;
-          left: -120px;
-          background: radial-gradient(
-            circle,
-            rgba(201, 154, 134, 0.12),
-            transparent 68%
-          );
-          pointer-events: none;
-        }
-
-        .hero-grid {
-          display: grid;
-          grid-template-columns: 1.1fr 0.9fr;
-          align-items: center;
-          gap: 70px;
-        }
-
-        .hero-content h1 {
-          margin: 25px 0;
-          font-size: clamp(42px, 6vw, 74px);
-          line-height: 1.55;
-          letter-spacing: -2px;
-        }
-
-        .hero-content h1 span {
-          color: var(--rose-gold);
-        }
-
-        .hero-content > p {
-          max-width: 580px;
-          color: var(--muted);
-          font-size: 15px;
-          line-height: 2.5;
-        }
-
-        .hero-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 12px;
-          margin-top: 30px;
-        }
-
-        .hero-note {
           display: flex;
           align-items: center;
-          gap: 12px;
-          margin-top: 48px;
-          color: var(--rose-gold);
-          font-size: 10px;
-          letter-spacing: 2px;
-        }
-
-        .note-line {
-          width: 38px;
-          height: 1px;
-          background: var(--rose-gold);
-        }
-
-        .hero-art {
-          position: relative;
-          padding: 20px;
-        }
-
-        .hero-art-frame {
-          aspect-ratio: 0.88;
-          padding: 15px;
-          border: 1px solid rgba(201, 154, 134, 0.5);
-          transform: rotate(-2deg);
-        }
-
-        .hero-art-inner {
-          width: 100%;
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: space-between;
-          padding: 35px 15px;
+          padding: 45px max(7%, calc((100% - 1250px) / 2));
           background:
-            radial-gradient(
-              circle at 50% 45%,
-              rgba(201, 154, 134, 0.2),
-              transparent 45%
-            ),
-            linear-gradient(145deg, #252024, #100e11 70%);
-          border: 1px solid rgba(201, 154, 134, 0.18);
+            radial-gradient(circle at 85% 40%, #6d40352c, transparent 35%),
+            linear-gradient(115deg, #191416, #0b0b0d 70%);
+          border-bottom: 1px solid #c99a862c;
         }
 
-        .art-caption,
-        .art-bottom {
-          color: var(--rose-gold);
-          font-size: 10px;
-          letter-spacing: 3px;
-          text-align: center;
-        }
-
-        .art-monogram {
-          color: var(--rose-gold);
-          font-family: Georgia, serif;
-          font-size: clamp(150px, 25vw, 280px);
-          font-weight: 400;
-          line-height: 1;
-          text-shadow: 0 0 55px rgba(201, 154, 134, 0.2);
-        }
-
-        .floating-label {
-          position: absolute;
-          right: -15px;
-          bottom: 45px;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 15px 20px;
-          background: #1b181b;
-          border: 1px solid var(--border);
-          box-shadow: 0 15px 50px #0008;
-        }
-
-        .floating-label > span {
-          color: var(--rose-gold);
-          font-family: Georgia, serif;
-          font-size: 30px;
-        }
-
-        .floating-label strong,
-        .floating-label small {
-          display: block;
-        }
-
-        .floating-label strong {
-          font-size: 12px;
-        }
-
-        .floating-label small {
-          margin-top: 5px;
-          color: var(--muted);
-          font-size: 8px;
-        }
-
-        .benefits-section {
-          background: #111013;
-          border-bottom: 1px solid var(--border);
-        }
-
-        .benefits-grid {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          padding-block: 30px;
-          gap: 25px;
-        }
-
-        .benefit {
-          display: flex;
-          align-items: center;
-          gap: 13px;
-        }
-
-        .benefit-icon {
-          color: var(--rose-gold);
-          font-size: 27px;
-        }
-
-        .benefit h3 {
-          margin: 0 0 7px;
-          font-size: 13px;
-        }
-
-        .benefit p {
-          margin: 0;
-          color: var(--muted);
-          font-size: 10px;
-          line-height: 1.9;
-        }
-
-        .category-grid {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 16px;
-        }
-
-        .category-card {
+        .hero-content {
           position: relative;
-          min-height: 185px;
-          padding: 25px;
-          overflow: hidden;
-          background: linear-gradient(145deg, #1c191d, #111013);
-          border: 1px solid var(--border);
-          border-radius: 16px;
-          transition: 0.25s;
+          z-index: 1;
         }
 
-        .category-card:hover {
-          transform: translateY(-5px);
-          border-color: var(--rose-gold);
+        .eyebrow {
+          color: #c99a86;
+          font-size: 11px;
+          letter-spacing: 4px;
         }
 
-        .category-number {
-          position: absolute;
-          left: 20px;
-          top: 18px;
-          color: #ffffff22;
-          font-size: 30px;
+        .catalog-hero h1 {
+          font-size: clamp(30px, 5vw, 48px);
+          margin: 16px 0 10px;
           font-weight: 800;
         }
 
-        .category-icon {
-          display: block;
-          margin-bottom: 20px;
-          color: var(--rose-gold);
-          font-size: 28px;
-        }
-
-        .category-card h3 {
-          margin: 0 0 9px;
-          font-size: 16px;
-        }
-
-        .category-card p {
-          margin: 0;
-          color: var(--muted);
-          font-size: 12px;
-        }
-
-        .category-arrow {
-          position: absolute;
-          left: 22px;
-          bottom: 20px;
-          color: var(--rose-gold);
-        }
-
-        .collection-banner {
-          position: relative;
-          overflow: hidden;
-          padding: 75px 0;
-          background:
-            radial-gradient(
-              ellipse at 10% 50%,
-              rgba(201, 154, 134, 0.16),
-              transparent 50%
-            ),
-            #171317;
-          border-block: 1px solid var(--border);
-        }
-
-        .collection-content {
-          text-align: center;
-        }
-
-        .collection-content h2 {
-          margin: 20px 0;
-          font-size: clamp(26px, 4vw, 43px);
-        }
-
-        .collection-content p {
-          max-width: 650px;
-          margin: 0 auto 28px;
-          color: var(--muted);
-          line-height: 2.3;
+        .catalog-hero p {
+          color: #b8aaa4;
+          line-height: 2;
           font-size: 14px;
         }
 
-        .experience-grid {
+        .hero-decoration {
+          position: absolute;
+          left: 12%;
+          top: -80px;
+          color: #c99a860c;
+          font-size: 350px;
+          font-family: Georgia, serif;
+          pointer-events: none;
+        }
+
+        .breadcrumb {
+          max-width: 1250px;
+          margin: 25px auto;
+          padding: 0 22px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          color: #968d89;
+          font-size: 13px;
+        }
+
+        .breadcrumb a {
+          color: #c99a86;
+          text-decoration: none;
+        }
+
+        .catalog-layout {
+          max-width: 1250px;
+          margin: 0 auto;
+          padding: 0 22px;
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: 255px minmax(0, 1fr);
+          gap: 28px;
+          align-items: start;
+        }
+
+        .filters {
+          background: #141416;
+          border: 1px solid #ffffff12;
+          border-radius: 14px;
+          padding: 20px;
+          position: sticky;
+          top: 20px;
+        }
+
+        .filter-heading {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding-bottom: 18px;
+          border-bottom: 1px solid #ffffff12;
+        }
+
+        .filter-heading h2 {
+          font-size: 17px;
+          margin: 0;
+        }
+
+        .filter-heading button {
+          color: #c99a86;
+          background: none;
+          border: 0;
+          cursor: pointer;
+          font: inherit;
+          font-size: 12px;
+        }
+
+        .filter-group {
+          padding: 21px 0;
+          border-bottom: 1px solid #ffffff12;
+        }
+
+        .filter-group h3,
+        .filter-group > label {
+          display: block;
+          font-size: 14px;
+          font-weight: 700;
+          margin: 0 0 14px;
+        }
+
+        .filter-group input[type="search"] {
+          width: 100%;
+          background: #0b0b0d;
+          border: 1px solid #ffffff20;
+          color: white;
+          padding: 13px;
+          border-radius: 8px;
+          outline: none;
+          font: inherit;
+          font-size: 12px;
+        }
+
+        .filter-group input:focus {
+          border-color: #c99a86;
+        }
+
+        .filter-option {
+          width: 100%;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 11px 10px;
+          color: #aaa1a0;
+          background: transparent;
+          border: 0;
+          border-radius: 7px;
+          cursor: pointer;
+          text-align: right;
+          font: inherit;
+          font-size: 13px;
+        }
+
+        .filter-option.active {
+          color: #c99a86;
+          background: #c99a8612;
+        }
+
+        .option-arrow {
+          font-size: 20px;
+        }
+
+        .radio-option {
+          display: flex !important;
+          align-items: center;
+          gap: 10px;
+          color: #b9b0ad;
+          margin: 12px 0 !important;
+          font-size: 13px !important;
+          cursor: pointer;
+        }
+
+        .radio-option input {
+          accent-color: #c99a86;
+        }
+
+        .filter-note {
+          display: flex;
+          gap: 10px;
+          align-items: flex-start;
+          padding-top: 18px;
+          color: #a99b95;
+        }
+
+        .filter-note span {
+          color: #c99a86;
+        }
+
+        .filter-note p {
+          font-size: 11px;
+          line-height: 2;
+          margin: 0;
+        }
+
+        .catalog-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 18px;
+          margin-bottom: 22px;
+          flex-wrap: wrap;
+        }
+
+        .toolbar-label {
+          color: #c99a86;
+          font-size: 11px;
+        }
+
+        .catalog-toolbar h2 {
+          font-size: 22px;
+          margin: 8px 0;
+        }
+
+        .catalog-toolbar p {
+          color: #918986;
+          font-size: 12px;
+          margin: 0;
+        }
+
+        .sort-control {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          color: #aaa09c;
+          font-size: 12px;
+        }
+
+        .sort-control select {
+          background: #171719;
+          border: 1px solid #ffffff20;
+          color: #f5f1ee;
+          padding: 10px;
+          border-radius: 7px;
+          font: inherit;
+          outline: none;
+        }
+
+        .products-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 18px;
         }
 
-        .experience-card {
-          padding: 28px;
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 16px;
+        .product-card {
+          overflow: hidden;
+          background: #151517;
+          border: 1px solid #ffffff12;
+          border-radius: 12px;
+          transition: border-color 0.2s, transform 0.2s;
         }
 
-        .experience-card > span {
-          color: var(--rose-gold);
-          font-family: Georgia, serif;
-          font-size: 30px;
+        .product-card:hover {
+          border-color: #c99a8670;
+          transform: translateY(-3px);
         }
 
-        .experience-card h3 {
-          margin: 20px 0 10px;
-          font-size: 16px;
+        .product-image {
+          height: 190px;
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          text-decoration: none;
+          background:
+            radial-gradient(circle at center, #c99a8624, transparent 65%),
+            linear-gradient(145deg, #28201f, #111113);
+          border-bottom: 1px solid #c99a8620;
         }
 
-        .experience-card p {
+        .product-symbol {
+          font-size: 65px;
+          color: #c99a86;
+          text-shadow: 0 0 30px #c99a8630;
+        }
+
+        .image-brand {
+          font-size: 9px;
+          letter-spacing: 3px;
+          color: #d2b6a9;
+          margin-top: 12px;
+        }
+
+        .image-caption {
+          color: #76645e;
+          font-size: 7px;
+          letter-spacing: 2px;
+          margin-top: 7px;
+        }
+
+        .product-info {
+          padding: 15px;
+        }
+
+        .product-meta {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 5px;
+          color: #c99a86;
+          font-size: 9px;
+          letter-spacing: 0.5px;
+        }
+
+        .product-sku {
+          color: #777071;
+          font-size: 9px;
+        }
+
+        .product-info h3 {
+          font-size: 14px;
+          line-height: 1.8;
+          margin: 12px 0 5px;
+        }
+
+        .product-info h3 a {
+          color: #f5f1ee;
+          text-decoration: none;
+        }
+
+        .product-category {
+          color: #918986;
+          font-size: 11px;
           margin: 0;
-          color: var(--muted);
-          font-size: 13px;
-          line-height: 2.2;
         }
 
-        .footer-grid {
-          display: grid;
-          grid-template-columns: 2fr 1fr 1fr 1fr;
-          gap: 35px;
-          padding-bottom: 45px;
+        .product-bottom {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-top: 18px;
+          padding-top: 13px;
+          border-top: 1px solid #ffffff12;
         }
 
-        .footer-brand p {
-          max-width: 300px;
-          color: var(--muted);
-          font-size: 12px;
-          line-height: 2.4;
-        }
-
-        .footer-column {
+        .price {
           display: flex;
           flex-direction: column;
-          gap: 15px;
-          font-size: 12px;
-          color: var(--muted);
+          gap: 5px;
         }
 
-        .footer-column h3 {
-          margin: 0 0 8px;
-          color: var(--foreground);
-          font-size: 14px;
+        .price strong {
+          color: #e1c1b2;
+          font-size: 13px;
         }
 
-        .footer-bottom {
-          display: flex;
-          justify-content: space-between;
-          gap: 15px;
-          padding-top: 22px;
-          border-top: 1px solid var(--border);
-          color: var(--muted);
+        .price small {
+          color: #807773;
+          font-size: 9px;
+        }
+
+        .stock {
           font-size: 10px;
+          padding: 6px 8px;
+          border-radius: 5px;
+          white-space: nowrap;
         }
 
-        @media (max-width: 1100px) {
-          .main-nav {
-            gap: 12px;
-            font-size: 11px;
-          }
+        .available {
+          color: #8cc8a2;
+          background: #8cc8a214;
+        }
 
-          .header-inner {
-            flex-wrap: wrap;
-            padding-block: 15px;
+        .unavailable {
+          color: #e49a9a;
+          background: #e49a9a14;
+        }
+
+        .details-button {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-top: 15px;
+          padding: 11px 12px;
+          color: #c99a86;
+          border: 1px solid #c99a8645;
+          border-radius: 7px;
+          text-decoration: none;
+          font-size: 12px;
+          transition: background 0.2s;
+        }
+
+        .details-button:hover {
+          background: #c99a8614;
+        }
+
+        .details-button span {
+          font-size: 17px;
+        }
+
+        .empty-state {
+          min-height: 330px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          text-align: center;
+          background: #141416;
+          border: 1px solid #ffffff12;
+          border-radius: 12px;
+          padding: 25px;
+        }
+
+        .empty-state > span {
+          font-size: 50px;
+          color: #c99a86;
+        }
+
+        .empty-state h3 {
+          margin: 12px 0;
+        }
+
+        .empty-state p {
+          color: #a69b96;
+          font-size: 13px;
+          line-height: 2;
+        }
+
+        .empty-state button {
+          margin-top: 12px;
+          padding: 11px 18px;
+          color: #0b0b0d;
+          background: #c99a86;
+          border: 0;
+          border-radius: 7px;
+          cursor: pointer;
+          font: inherit;
+          font-size: 12px;
+        }
+
+        @media (max-width: 1050px) {
+          .products-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
 
-        @media (max-width: 800px) {
-          .main-nav {
-            order: 3;
-            width: 100%;
-            overflow-x: auto;
-            justify-content: flex-start;
-            padding: 12px 0;
-          }
-
-          .hero {
-            padding: 55px 0;
-          }
-
-          .hero-grid {
-            grid-template-columns: 1fr;
-            gap: 35px;
-          }
-
-          .hero-art {
-            max-width: 430px;
-            margin-inline: auto;
-            width: 100%;
-          }
-
-          .benefits-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-
-          .footer-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-        }
-
-        @media (max-width: 520px) {
-          .topbar-inner {
-            font-size: 9px;
-          }
-
-          .header-inner {
-            gap: 12px;
-          }
-
-          .brand strong {
-            font-size: 11px;
-          }
-
-          .header-actions {
-            font-size: 10px;
-          }
-
-          .hero-content h1 {
-            font-size: 43px;
-          }
-
-          .category-grid {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-          }
-
-          .category-card {
-            min-height: 165px;
-            padding: 17px;
-          }
-
-          .category-card h3 {
-            font-size: 13px;
-          }
-
-          .category-card p {
-            font-size: 10px;
-            line-height: 1.8;
-          }
-
-          .experience-grid {
+        @media (max-width: 720px) {
+          .catalog-layout {
             grid-template-columns: 1fr;
           }
 
-          .footer-grid {
-            gap: 25px;
+          .filters {
+            position: static;
           }
 
-          .footer-bottom {
+          .catalog-hero {
+            min-height: 205px;
+          }
+
+          .hero-decoration {
+            left: 0;
+            font-size: 250px;
+          }
+        }
+
+        @media (max-width: 430px) {
+          .products-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .product-image {
+            height: 210px;
+          }
+
+          .catalog-toolbar {
+            align-items: flex-start;
             flex-direction: column;
-            line-height: 2;
           }
         }
       `}</style>
