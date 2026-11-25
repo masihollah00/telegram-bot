@@ -40,7 +40,10 @@ class OrderStatusHistorySerializer(serializers.ModelSerializer):
     def get_changed_by_name(self, obj):
         if not obj.changed_by:
             return None
-        return obj.changed_by.get_full_name() or obj.changed_by.get_username()
+        return (
+            obj.changed_by.get_full_name()
+            or obj.changed_by.get_username()
+        )
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -92,6 +95,7 @@ class OrderCreateItemSerializer(serializers.Serializer):
 class OrderCreateSerializer(serializers.Serializer):
     customer_name = serializers.CharField(max_length=160)
     customer_phone = serializers.CharField(max_length=20)
+
     customer_email = serializers.EmailField(
         required=False,
         allow_blank=True,
@@ -105,6 +109,7 @@ class OrderCreateSerializer(serializers.Serializer):
     customer_note = serializers.CharField(
         required=False,
         allow_blank=True,
+        max_length=3000,
     )
 
     items = OrderCreateItemSerializer(
@@ -113,45 +118,77 @@ class OrderCreateSerializer(serializers.Serializer):
     )
 
     def validate_customer_phone(self, value):
-        normalized = value.replace(" ", "").replace("-", "")
+        normalized = (
+            value.strip()
+            .replace(" ", "")
+            .replace("-", "")
+        )
+
         if not normalized.replace("+", "").isdigit():
             raise serializers.ValidationError(
                 "شماره تماس معتبر نیست."
             )
-        if len(normalized) < 10 or len(normalized) > 15:
+
+        if not 10 <= len(normalized) <= 15:
             raise serializers.ValidationError(
                 "طول شماره تماس معتبر نیست."
             )
+
         return normalized
 
     def validate(self, attrs):
-        product_ids = [item["product_id"] for item in attrs["items"]]
+        product_ids = [
+            item["product_id"]
+            for item in attrs["items"]
+        ]
 
         if len(product_ids) != len(set(product_ids)):
             raise serializers.ValidationError({
                 "items": "هر محصول فقط یک‌بار در سفارش ثبت شود."
             })
 
-        products = Product.objects.filter(
-            id__in=product_ids,
-            is_active=True,
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        from uuid import uuid4
+
+        user = self.context["request"].user
+        items_data = validated_data.pop("items")
+
+        product_ids = [
+            item["product_id"]
+            for item in items_data
+        ]
+
+        # قفل‌کردن ردیف محصولات تا پایان تراکنش
+        # برای جلوگیری از ثبت هم‌زمان سفارش بیش از موجودی
+        locked_products = list(
+            Product.objects
+            .select_for_update()
+            .filter(
+                id__in=product_ids,
+                is_active=True,
+            )
+            .order_by("id")
         )
 
-        product_map = {product.id: product for product in products}
+        product_map = {
+            product.id: product
+            for product in locked_products
+        }
 
-        for item in attrs["items"]:
-            product = product_map.get(item["product_id"])
+        if len(product_map) != len(product_ids):
+            raise serializers.ValidationError({
+                "items": "یکی از محصولات یافت نشد یا غیرفعال است."
+            })
 
-            if product is None:
-                raise serializers.ValidationError({
-                    "items": "یکی از محصولات موجود یا فعال نیست."
-                })
+        prepared_items = []
+        subtotal = 0
 
-            if not product.is_available:
-                raise serializers.ValidationError({
-                    "items": f"محصول {product.name} ناموجود است."
-                })
-
+        # اعتبارسنجی موجودی و تعداد سفارش
+        for item in items_data:
+            product = product_map[item["product_id"]]
             quantity = item["quantity"]
 
             if quantity < product.minimum_order_quantity:
@@ -163,58 +200,29 @@ class OrderCreateSerializer(serializers.Serializer):
                 })
 
             if (
-                product.carton_quantity
-                and product.carton_quantity > 1
-                and quantity % product.carton_quantity != 0
+                product.units_per_carton > 1
+                and quantity % product.units_per_carton != 0
             ):
                 raise serializers.ValidationError({
                     "items": (
                         f"تعداد سفارش {product.name} باید "
-                        f"مضربی از تعداد کارتن باشد."
+                        f"مضربی از {product.units_per_carton} باشد."
                     )
                 })
 
-        attrs["_product_map"] = product_map
-        return attrs
-
-    @transaction.atomic
-    def create(self, validated_data):
-        from uuid import uuid4
-
-        from django.db.models import Q
-
-        user = self.context["request"].user
-        product_map = validated_data.pop("_product_map")
-        items_data = validated_data.pop("items")
-
-        subtotal = 0
-        prepared_items = []
-
-        for item in items_data:
-            product = Product.objects.select_for_update().get(
-                Q(id=item["product_id"]),
-                is_active=True,
-            )
-
-            if not product.is_available:
+            if quantity > product.stock_quantity:
                 raise serializers.ValidationError({
-                    "items": f"محصول {product.name} دیگر موجود نیست."
+                    "items": (
+                        f"موجودی کافی برای {product.name} وجود ندارد. "
+                        f"موجودی فعلی: {product.stock_quantity}"
+                    )
                 })
 
-            quantity = item["quantity"]
-
-            if quantity < product.minimum_order_quantity:
+            if product.public_price <= 0:
                 raise serializers.ValidationError({
-                    "items": f"حداقل سفارش {product.name} رعایت نشده است."
-                })
-
-            if (
-                product.carton_quantity
-                and product.carton_quantity > 1
-                and quantity % product.carton_quantity != 0
-            ):
-                raise serializers.ValidationError({
-                    "items": f"تعداد کارتن محصول {product.name} معتبر نیست."
+                    "items": (
+                        f"قیمت محصول {product.name} هنوز تعیین نشده است."
+                    )
                 })
 
             line_total = product.public_price * quantity
@@ -227,6 +235,18 @@ class OrderCreateSerializer(serializers.Serializer):
                 "line_total": line_total,
             })
 
+        # رزرو موجودی در همان تراکنش ثبت سفارش
+        for item in prepared_items:
+            product = item["product"]
+            product.stock_quantity -= item["quantity"]
+
+            product.save(update_fields=[
+                "stock_quantity",
+                "availability",
+                "updated_at",
+            ])
+
+        # محاسبه مبلغ صرفاً در سرور
         order = Order.objects.create(
             order_number=f"JAL-{uuid4().hex[:12].upper()}",
             customer=user,
@@ -252,7 +272,7 @@ class OrderCreateSerializer(serializers.Serializer):
             order=order,
             old_status="",
             new_status=Order.Status.PENDING,
-            description="سفارش توسط مشتری ثبت شد.",
+            description="سفارش توسط مشتری ثبت شد و موجودی آن رزرو شد.",
             changed_by=user,
         )
 
