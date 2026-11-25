@@ -1,4 +1,3 @@
-
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
@@ -36,6 +35,12 @@ urlpatterns = [
     path(
         "api/store/",
         include("apps.orders.urls"),
+    ),
+
+    # API حساب مشتری
+    path(
+        "api/store/",
+        include("apps.customers.urls"),
     ),
 
     # مدیریت محصولات
