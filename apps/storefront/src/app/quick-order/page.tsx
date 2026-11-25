@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type OrderItem = {
   id: number;
@@ -22,6 +22,33 @@ export default function QuickOrderPage() {
   const [requestType, setRequestType] = useState("quotation");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [prefilledProduct, setPrefilledProduct] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    const sku = (params.get("sku") || "").trim().toUpperCase();
+    const productName = (params.get("product") || "").trim();
+
+    const requestedQuantity = Number(params.get("quantity") || 1);
+    const quantity =
+      Number.isFinite(requestedQuantity) && requestedQuantity > 0
+        ? Math.floor(requestedQuantity)
+        : 1;
+
+    if (!sku) return;
+
+    setItems([
+      {
+        id: 1,
+        sku,
+        quantity,
+        note: productName,
+      },
+    ]);
+
+    setPrefilledProduct(productName || sku);
+  }, []);
 
   function updateItem(
     id: number,
@@ -89,18 +116,16 @@ export default function QuickOrderPage() {
       company: company.trim(),
       request_type: requestType,
       items: items.map((item) => ({
-        sku: item.sku.trim(),
+        sku: item.sku.trim().toUpperCase(),
         quantity: item.quantity,
         note: item.note.trim(),
       })),
       description: description.trim(),
     };
 
-    // TODO: Send payload to the real backend.
-    // POST /api/store/quotation-requests/
-    // The server must validate SKU, stock, minimum quantities,
-    // partner pricing, permissions and final quotation amounts.
-    // Never trust prices or stock quantities supplied by the client.
+    // این نسخه فقط اطلاعات فرم را آماده و اعتبارسنجی می‌کند.
+    // اتصال API و ثبت واقعی درخواست در مرحله اتصال نهایی انجام می‌شود.
+    // قیمت، موجودی و حداقل سفارش باید همیشه در سرور بررسی شوند.
 
     console.info("Quotation request prepared:", payload);
 
@@ -185,6 +210,20 @@ export default function QuickOrderPage() {
               </div>
               <span className="required">حداقل یک محصول</span>
             </div>
+
+            {prefilledProduct && (
+              <div className="prefilled-notice">
+                <span className="notice-icon">✓</span>
+                <div>
+                  <strong>محصول انتخاب‌شده دریافت شد</strong>
+                  <p>{prefilledProduct}</p>
+                  <small>
+                    کد کالا و تعداد اولیه از صفحه محصول وارد شده‌اند.
+                    می‌توانید اطلاعات را تغییر دهید.
+                  </small>
+                </div>
+              </div>
+            )}
 
             <div className="product-intro">
               <strong>اطلاعات کالا را وارد کنید</strong>
@@ -496,6 +535,47 @@ export default function QuickOrderPage() {
           grid-column: 1 / -1;
         }
 
+        .prefilled-notice {
+          display: flex;
+          align-items: flex-start;
+          gap: 13px;
+          margin-bottom: 20px;
+          padding: 16px;
+          border: 1px solid #657b61;
+          border-radius: 10px;
+          background: #172019;
+        }
+
+        .notice-icon {
+          width: 29px;
+          height: 29px;
+          flex-shrink: 0;
+          display: grid;
+          place-items: center;
+          border-radius: 50%;
+          background: #304b35;
+          color: #c5e2c1;
+          font-size: 15px;
+        }
+
+        .prefilled-notice strong {
+          display: block;
+          color: #d7e5d1;
+          font-size: 12px;
+        }
+
+        .prefilled-notice p {
+          margin: 7px 0;
+          color: #d5b5a5;
+          font-size: 12px;
+        }
+
+        .prefilled-notice small {
+          color: #a5b5a0;
+          font-size: 10px;
+          line-height: 1.9;
+        }
+
         .product-intro {
           margin-bottom: 20px;
         }
@@ -731,6 +811,11 @@ export default function QuickOrderPage() {
           .section-heading {
             align-items: flex-start;
             flex-direction: column;
+          }
+
+          footer {
+            flex-direction: column;
+            text-align: center;
           }
         }
       `}</style>
