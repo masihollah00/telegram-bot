@@ -1,0 +1,20 @@
+{
+  "name": "jalali-cosmetics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JALALI COSMETICS - Premium Wholesale Beauty Commerce Platform",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/storefront"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/storefront",
+    "build": "npm run build --workspace=apps/storefront",
+    "start": "npm run start --workspace=apps/storefront",
+    "lint": "npm run lint --workspace=apps/storefront",
+    "typecheck": "npm run typecheck --workspace=apps/storefront"
+  }
+}
