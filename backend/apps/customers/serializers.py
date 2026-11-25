@@ -56,19 +56,20 @@ class CustomerAddressSerializer(serializers.ModelSerializer):
         value = value.strip().replace(" ", "").replace("-", "")
 
         if not value.replace("+", "").isdigit():
-            raise serializers.ValidationError(
-                "شماره تماس معتبر نیست."
-            )
+            raise serializers.ValidationError("شماره تماس معتبر نیست.")
 
         if not 10 <= len(value) <= 15:
-            raise serializers.ValidationError(
-                "طول شماره تماس معتبر نیست."
-            )
+            raise serializers.ValidationError("طول شماره تماس معتبر نیست.")
 
         return value
 
 
 class PartnerApplicationSerializer(serializers.ModelSerializer):
+    national_id = serializers.CharField(
+        write_only=True,
+        max_length=20,
+    )
+
     class Meta:
         model = PartnerApplication
         fields = (
@@ -76,6 +77,7 @@ class PartnerApplicationSerializer(serializers.ModelSerializer):
             "business_name",
             "owner_name",
             "phone",
+            "national_id",
             "business_license_number",
             "province",
             "city",
@@ -98,14 +100,21 @@ class PartnerApplicationSerializer(serializers.ModelSerializer):
         value = value.strip().replace(" ", "").replace("-", "")
 
         if not value.replace("+", "").isdigit():
-            raise serializers.ValidationError(
-                "شماره تماس معتبر نیست."
-            )
+            raise serializers.ValidationError("شماره تماس معتبر نیست.")
 
         if not 10 <= len(value) <= 15:
-            raise serializers.ValidationError(
-                "شماره تماس معتبر نیست."
-            )
+            raise serializers.ValidationError("شماره تماس معتبر نیست.")
+
+        return value
+
+    def validate_national_id(self, value):
+        value = value.strip()
+
+        if not value.isdigit():
+            raise serializers.ValidationError("کد ملی باید فقط شامل عدد باشد.")
+
+        if not 8 <= len(value) <= 12:
+            raise serializers.ValidationError("کد ملی معتبر نیست.")
 
         return value
 
@@ -138,12 +147,7 @@ class PartnerApplicationSerializer(serializers.ModelSerializer):
             user=request.user,
         )
 
-        profile.partner_status = (
-            CustomerProfile.PartnerStatus.PENDING
-        )
-        profile.save(update_fields=[
-            "partner_status",
-            "updated_at",
-        ])
+        profile.partner_status = CustomerProfile.PartnerStatus.PENDING
+        profile.save(update_fields=["partner_status", "updated_at"])
 
         return application
