@@ -158,6 +158,15 @@ export default function ProductDetailsPage() {
 
   const available = product?.availability === "in_stock";
 
+  const quickOrderHref = product
+    ? `/quick-order?sku=${encodeURIComponent(
+        product.sku
+      )}&quantity=${Math.max(
+        1,
+        Number(product.minimum_order_quantity || 1)
+      )}&product=${encodeURIComponent(product.name)}`
+    : "/quick-order";
+
   if (loading) {
     return (
       <main className="state-page" dir="rtl">
@@ -470,7 +479,7 @@ export default function ProductDetailsPage() {
 
           <div className="action-buttons">
             {available ? (
-              <Link href="/quick-order" className="primary-button">
+              <Link href={quickOrderHref} className="primary-button">
                 درخواست خرید عمده
                 <span>←</span>
               </Link>
