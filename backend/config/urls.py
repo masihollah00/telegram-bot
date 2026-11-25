@@ -1,3 +1,4 @@
+
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
@@ -12,25 +13,18 @@ def health_check(request):
 
 
 urlpatterns = [
-    # پنل مدیریت Django
     path("admin/", admin.site.urls),
 
-    # بررسی سلامت سرور
-    path(
-        "api/health/",
-        health_check,
-        name="health-check",
-    ),
+    # System health
+    path("api/health/", health_check, name="health-check"),
 
-    # اطلاعات عمومی فروشگاه و تنظیمات مدیریتی
-    path(
-        "api/store/",
-        include("apps.core.urls"),
-    ),
+    # Public storefront API
+    path("api/store/", include("apps.core.urls")),
+    path("api/store/", include("apps.products.urls")),
 
-    # محصولات، دسته‌بندی‌ها و برندها
+    # Protected product management API
     path(
-        "api/store/",
-        include("apps.products.urls"),
+        "api/admin/store/products/",
+        include("apps.products.admin_urls"),
     ),
 ]
