@@ -1,88 +1,34 @@
 import os
 from pathlib import Path
 
-import dj_database_url
-
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# ==================================================
-# ENVIRONMENT
-# ==================================================
-
 def env_bool(name, default=False):
     value = os.getenv(name)
-
     if value is None:
         return default
-
-    return value.strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def env_list(name, default=""):
-    return [
-        item.strip()
-        for item in os.getenv(name, default).split(",")
-        if item.strip()
-    ]
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
-DEBUG = env_bool("DEBUG", False)
+SECRET_KEY = os.getenv(
+    "DJANGO_SECRET_KEY",
+    os.getenv("SECRET_KEY", "jalali-cosmetics-development-key-change-before-production"),
+)
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
-
-if not SECRET_KEY:
-    if DEBUG:
-        SECRET_KEY = (
-            "development-only-change-this-secret-key"
-        )
-    else:
-        raise RuntimeError(
-            "DJANGO_SECRET_KEY must be configured in production."
-        )
-
-
-# ==================================================
-# HOSTS AND SECURITY
-# ==================================================
+DEBUG = env_bool("DJANGO_DEBUG", env_bool("DEBUG", False))
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
-    "localhost,127.0.0.1"
+    os.getenv("ALLOWED_HOSTS", "*"),
 )
 
-CSRF_TRUSTED_ORIGINS = env_list(
-    "DJANGO_CSRF_TRUSTED_ORIGINS"
-)
-
-if DEBUG:
-    SECURE_SSL_REDIRECT = False
-    SESSION_COOKIE_SECURE = False
-    CSRF_COOKIE_SECURE = False
-else:
-    SECURE_SSL_REDIRECT = env_bool(
-        "SECURE_SSL_REDIRECT",
-        True
-    )
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-
-SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_REFERRER_POLICY = "same-origin"
-X_FRAME_OPTIONS = "DENY"
-
-SECURE_PROXY_SSL_HEADER = (
-    "HTTP_X_FORWARDED_PROTO",
-    "https"
-)
-
-
-# ==================================================
-# APPLICATIONS
-# ==================================================
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -95,17 +41,11 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
 
-    # JALALI COSMETICS CORE
-    "apps.core.apps.CoreConfig",
-
-    # JALALI COSMETICS PRODUCTS
-    "apps.products.apps.ProductsConfig",
+    "apps.core",
+    "apps.products",
+    "apps.orders",
+    "apps.customers",
 ]
-
-
-# ==================================================
-# MIDDLEWARE
-# ==================================================
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -119,29 +59,12 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-
-# ==================================================
-# URL CONFIGURATION
-# ==================================================
-
 ROOT_URLCONF = "config.urls"
-
-WSGI_APPLICATION = "config.wsgi.application"
-ASGI_APPLICATION = "config.asgi.application"
-
-
-# ==================================================
-# TEMPLATES
-# ==================================================
 
 TEMPLATES = [
     {
-        "BACKEND": (
-            "django.template.backends.django.DjangoTemplates"
-        ),
-        "DIRS": [
-            BASE_DIR / "templates",
-        ],
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -154,22 +77,28 @@ TEMPLATES = [
     },
 ]
 
+WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 
-# ==================================================
-# DATABASE
-# ==================================================
-
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 if DATABASE_URL:
-    DATABASES = {
-        "default": dj_database_url.parse(
-            DATABASE_URL,
-            conn_max_age=600,
-            conn_health_checks=True,
-            ssl_require=not DEBUG,
-        )
-    }
+    try:
+        import dj_database_url
+        DATABASES = {
+            "default": dj_database_url.parse(
+                DATABASE_URL,
+                conn_max_age=600,
+                ssl_require=not DEBUG,
+            )
+        }
+    except ImportError:
+        DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.sqlite3",
+                "NAME": BASE_DIR / "db.sqlite3",
+            }
+        }
 else:
     DATABASES = {
         "default": {
@@ -178,187 +107,65 @@ else:
         }
     }
 
-
-# ==================================================
-# PASSWORD VALIDATION
-# ==================================================
-
 AUTH_PASSWORD_VALIDATORS = [
     {
-        "NAME": (
-            "django.contrib.auth.password_validation."
-            "UserAttributeSimilarityValidator"
-        ),
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        "NAME": (
-            "django.contrib.auth.password_validation."
-            "MinimumLengthValidator"
-        ),
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        "NAME": (
-            "django.contrib.auth.password_validation."
-            "CommonPasswordValidator"
-        ),
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        "NAME": (
-            "django.contrib.auth.password_validation."
-            "NumericPasswordValidator"
-        ),
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
-
-# ==================================================
-# INTERNATIONALIZATION
-# ==================================================
-
 LANGUAGE_CODE = "fa-ir"
-
 TIME_ZONE = "Asia/Tehran"
-
 USE_I18N = True
 USE_TZ = True
 
-
-# ==================================================
-# STATIC AND MEDIA FILES
-# ==================================================
-
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = []
-
-if DEBUG:
-    STORAGES = {
-        "default": {
-            "BACKEND": (
-                "django.core.files.storage.FileSystemStorage"
-            ),
-        },
-        "staticfiles": {
-            "BACKEND": (
-                "django.contrib.staticfiles.storage.StaticFilesStorage"
-            ),
-        },
-    }
-else:
-    STORAGES = {
-        "default": {
-            "BACKEND": (
-                "django.core.files.storage.FileSystemStorage"
-            ),
-        },
-        "staticfiles": {
-            "BACKEND": (
-                "whitenoise.storage.CompressedManifestStaticFilesStorage"
-            ),
-        },
-    }
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-
-# ==================================================
-# CORS
-# ==================================================
-
-CORS_ALLOWED_ORIGINS = env_list(
-    "CORS_ALLOWED_ORIGINS"
-)
-
-CORS_ALLOW_CREDENTIALS = True
-
-
-# ==================================================
-# DJANGO REST FRAMEWORK
-# ==================================================
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
-
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
     ],
-
-    "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-    ],
-
-    "DEFAULT_PARSER_CLASSES": [
-        "rest_framework.parsers.JSONParser",
-        "rest_framework.parsers.FormParser",
-        "rest_framework.parsers.MultiPartParser",
-    ],
-
-    "DEFAULT_PAGINATION_CLASS": (
-        "rest_framework.pagination.PageNumberPagination"
-    ),
-
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 24,
 }
 
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
 
-# ==================================================
-# DEFAULTS
-# ==================================================
+CORS_ALLOW_CREDENTIALS = True
 
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+if not CORS_ALLOWED_ORIGINS and DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = False
 
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# ==================================================
-# BUSINESS CONFIGURATION
-# ==================================================
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
 
-STORE_NAME = os.getenv(
-    "STORE_NAME",
-    "JALALI COSMETICS"
-)
-
-STORE_SLOGAN = os.getenv(
-    "STORE_SLOGAN",
-    "BEAUTY. BUSINESS. TRUST."
-)
-
-STORE_CURRENCY = "IRR"
-STORE_DISPLAY_CURRENCY = "TOMAN"
-STORE_COUNTRY = "IR"
-STORE_LANGUAGE = "fa"
-STORE_TIME_ZONE = "Asia/Tehran"
-
-
-# ==================================================
-# LOGGING
-# ==================================================
-
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-
-    "formatters": {
-        "verbose": {
-            "format": (
-                "{levelname} {asctime} "
-                "{name} {message}"
-            ),
-            "style": "{",
-        },
-    },
-
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "verbose",
-        },
-    },
-
-    "root": {
-        "handlers": ["console"],
-        "level": os.getenv("LOG_LEVEL", "INFO"),
-    },
-}
+if not DEBUG:
+    SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", True)
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
