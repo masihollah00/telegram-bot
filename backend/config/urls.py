@@ -15,14 +15,30 @@ def health_check(request):
 urlpatterns = [
     path("admin/", admin.site.urls),
 
-    # System health
-    path("api/health/", health_check, name="health-check"),
+    # وضعیت سرور
+    path(
+        "api/health/",
+        health_check,
+        name="health-check",
+    ),
 
-    # Public storefront API
-    path("api/store/", include("apps.core.urls")),
-    path("api/store/", include("apps.products.urls")),
+    # API عمومی فروشگاه
+    path(
+        "api/store/",
+        include("apps.core.urls"),
+    ),
+    path(
+        "api/store/",
+        include("apps.products.urls"),
+    ),
 
-    # Protected product management API
+    # API سفارش‌های مشتری
+    path(
+        "api/store/",
+        include("apps.orders.urls"),
+    ),
+
+    # مدیریت محصولات
     path(
         "api/admin/store/products/",
         include("apps.products.admin_urls"),
