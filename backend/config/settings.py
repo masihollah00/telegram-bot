@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 
@@ -68,7 +67,6 @@ else:
         "SECURE_SSL_REDIRECT",
         True
     )
-
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 
@@ -99,6 +97,9 @@ INSTALLED_APPS = [
 
     # JALALI COSMETICS CORE
     "apps.core.apps.CoreConfig",
+
+    # JALALI COSMETICS PRODUCTS
+    "apps.products.apps.ProductsConfig",
 ]
 
 
@@ -109,9 +110,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
-
     "corsheaders.middleware.CorsMiddleware",
-
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -206,12 +205,6 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": (
             "django.contrib.auth.password_validation."
-            "CommonPasswordValidator"
-        ),
-    },
-    {
-        "NAME": (
-            "django.contrib.auth.password_validation."
             "NumericPasswordValidator"
         ),
     },
@@ -235,9 +228,7 @@ USE_TZ = True
 # ==================================================
 
 STATIC_URL = "/static/"
-
 STATIC_ROOT = BASE_DIR / "staticfiles"
-
 STATICFILES_DIRS = []
 
 if DEBUG:
@@ -335,13 +326,9 @@ STORE_SLOGAN = os.getenv(
 )
 
 STORE_CURRENCY = "IRR"
-
 STORE_DISPLAY_CURRENCY = "TOMAN"
-
 STORE_COUNTRY = "IR"
-
 STORE_LANGUAGE = "fa"
-
 STORE_TIME_ZONE = "Asia/Tehran"
 
 
