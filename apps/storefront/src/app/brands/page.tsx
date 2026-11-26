@@ -398,9 +398,7 @@ export default function BrandsPage() {
                       )}
 
                       <Link
-                        href={`/products?brand=${encodeURIComponent(
-                          brand.slug
-                        )}`}
+                        href={`/brands/${encodeURIComponent(brand.slug)}`}
                         className="view-link"
                       >
                         مشاهده محصولات
