@@ -15,6 +15,13 @@ from .views import (
     AssignGalleryAssetView,
 )
 
+from .admin_auth import (
+    admin_csrf,
+    admin_login,
+    admin_me,
+    admin_logout,
+)
+
 
 app_name = "jalali_core"
 
@@ -55,6 +62,34 @@ router.register(
 # ---------------------------------------------------------
 
 urlpatterns = [
+
+    # -----------------------------------------------------
+    # ADMIN AUTHENTICATION
+    # -----------------------------------------------------
+
+    path(
+        "admin/auth/csrf/",
+        admin_csrf,
+        name="admin-auth-csrf",
+    ),
+
+    path(
+        "admin/auth/login/",
+        admin_login,
+        name="admin-auth-login",
+    ),
+
+    path(
+        "admin/auth/me/",
+        admin_me,
+        name="admin-auth-me",
+    ),
+
+    path(
+        "admin/auth/logout/",
+        admin_logout,
+        name="admin-auth-logout",
+    ),
 
     # -----------------------------------------------------
     # PUBLIC STORE INFORMATION
