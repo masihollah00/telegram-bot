@@ -1,5 +1,8 @@
 
 import os
+import warnings
+
+from PIL import Image, UnidentifiedImageError
 
 from rest_framework import serializers
 
@@ -12,8 +15,11 @@ from .models import (
 )
 
 
+# =========================================================
+# STORE CONFIGURATION
+# =========================================================
+
 class StoreConfigurationSerializer(serializers.ModelSerializer):
-    """Public read-only representation of store information."""
 
     class Meta:
         model = StoreConfiguration
@@ -37,7 +43,6 @@ class StoreConfigurationSerializer(serializers.ModelSerializer):
 
 
 class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
-    """Administrative store configuration serializer."""
 
     class Meta:
         model = StoreConfiguration
@@ -59,11 +64,18 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
             "updated_at",
             "updated_by",
         ]
-        read_only_fields = ["id", "updated_at", "updated_by"]
+        read_only_fields = [
+            "id",
+            "updated_at",
+            "updated_by",
+        ]
 
+
+# =========================================================
+# SITE THEME
+# =========================================================
 
 class SiteThemeSerializer(serializers.ModelSerializer):
-    """Public, read-only active theme representation."""
 
     class Meta:
         model = SiteTheme
@@ -82,7 +94,6 @@ class SiteThemeSerializer(serializers.ModelSerializer):
 
 
 class SiteThemeAdminSerializer(serializers.ModelSerializer):
-    """Validated theme editor serializer for authenticated staff."""
 
     ALLOWED_COLOR_KEYS = {
         "primary",
@@ -114,12 +125,14 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
     }
 
     def validate_colors(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "پالت رنگ باید یک شیء معتبر باشد."
             )
 
         unknown = set(value.keys()) - self.ALLOWED_COLOR_KEYS
+
         if unknown:
             raise serializers.ValidationError(
                 "کلیدهای رنگ ناشناخته هستند: "
@@ -127,12 +140,14 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
             )
 
         for key, color in value.items():
+
             if not isinstance(color, str) or len(color) > 40:
                 raise serializers.ValidationError(
                     f"مقدار رنگ {key} معتبر نیست."
                 )
 
             normalized = color.strip().lower()
+
             if not (
                 normalized.startswith("#")
                 or normalized.startswith("rgb(")
@@ -147,12 +162,14 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
         return value
 
     def validate_custom_css_variables(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "متغیرهای طراحی باید یک شیء معتبر باشند."
             )
 
         unknown = set(value.keys()) - self.ALLOWED_CSS_VARIABLES
+
         if unknown:
             raise serializers.ValidationError(
                 "متغیرهای CSS غیرمجاز هستند: "
@@ -160,6 +177,7 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
             )
 
         for key, item in value.items():
+
             if not isinstance(item, (str, int, float)):
                 raise serializers.ValidationError(
                     f"مقدار {key} باید متنی یا عددی باشد."
@@ -173,12 +191,14 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
         return value
 
     def validate_assets(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "دارایی‌های تم باید یک شیء معتبر باشند."
             )
 
         for key, asset_id in value.items():
+
             if not isinstance(key, str) or len(key) > 80:
                 raise serializers.ValidationError(
                     "شناسه جایگاه تصویر معتبر نیست."
@@ -208,11 +228,18 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
             "updated_at",
             "updated_by",
         ]
-        read_only_fields = ["id", "updated_at", "updated_by"]
+        read_only_fields = [
+            "id",
+            "updated_at",
+            "updated_by",
+        ]
 
+
+# =========================================================
+# PUBLIC MEDIA SERIALIZER
+# =========================================================
 
 class SiteAssetSerializer(serializers.ModelSerializer):
-    """Public metadata for assets in the media library."""
 
     file_url = serializers.SerializerMethodField()
 
@@ -238,30 +265,53 @@ class SiteAssetSerializer(serializers.ModelSerializer):
         ]
 
     def get_file_url(self, obj):
+
         request = self.context.get("request")
+
         if not obj.file:
             return None
 
-        url = obj.file.url
-        return request.build_absolute_uri(url) if request else url
+        try:
+            url = obj.file.url
+        except (ValueError, OSError):
+            return None
 
+        return (
+            request.build_absolute_uri(url)
+            if request
+            else url
+        )
+
+
+# =========================================================
+# CENTRAL MEDIA LIBRARY ADMIN SERIALIZER
+# =========================================================
 
 class SiteAssetAdminSerializer(serializers.ModelSerializer):
-    """Admin upload serializer with extension and size restrictions."""
 
     file_url = serializers.SerializerMethodField(read_only=True)
 
-    ALLOWED_EXTENSIONS = {
+    ALLOWED_IMAGE_EXTENSIONS = {
         ".jpg",
         ".jpeg",
         ".png",
         ".webp",
         ".avif",
         ".gif",
-        ".pdf",
     }
 
     MAX_FILE_SIZE = 12 * 1024 * 1024
+
+    MAX_IMAGE_PIXELS = 40_000_000
+
+    IMAGE_FORMATS = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".webp": "WEBP",
+        ".gif": "GIF",
+        ".avif": "AVIF",
+    }
 
     class Meta:
         model = SiteAsset
@@ -286,22 +336,40 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
         ]
 
     def get_file_url(self, obj):
+
         request = self.context.get("request")
+
         if not obj.file:
             return None
 
-        url = obj.file.url
-        return request.build_absolute_uri(url) if request else url
+        try:
+            url = obj.file.url
+        except (ValueError, OSError):
+            return None
+
+        return (
+            request.build_absolute_uri(url)
+            if request
+            else url
+        )
 
     def validate_file(self, uploaded_file):
+
         extension = os.path.splitext(
             uploaded_file.name
         )[1].lower()
 
-        if extension not in self.ALLOWED_EXTENSIONS:
+        allowed = self.ALLOWED_IMAGE_EXTENSIONS | {".pdf"}
+
+        if extension not in allowed:
             raise serializers.ValidationError(
                 "فرمت فایل مجاز نیست. "
-                "فرمت‌های مجاز: JPG، PNG، WEBP، AVIF، GIF و PDF."
+                "فرمت‌های مجاز: JPG، PNG، WEBP، GIF، AVIF و PDF."
+            )
+
+        if uploaded_file.size <= 0:
+            raise serializers.ValidationError(
+                "فایل انتخاب‌شده خالی است."
             )
 
         if uploaded_file.size > self.MAX_FILE_SIZE:
@@ -311,16 +379,124 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
 
         return uploaded_file
 
+    def validate(self, attrs):
+
+        uploaded_file = attrs.get("file")
+
+        asset_type = attrs.get(
+            "asset_type",
+            getattr(self.instance, "asset_type", None),
+        )
+
+        if not uploaded_file:
+            return attrs
+
+        extension = os.path.splitext(
+            uploaded_file.name
+        )[1].lower()
+
+        is_document = (
+            asset_type == SiteAsset.AssetType.DOCUMENT
+        )
+
+        if is_document:
+
+            if extension != ".pdf":
+                raise serializers.ValidationError({
+                    "file": "برای سند فقط فایل PDF مجاز است."
+                })
+
+            uploaded_file.seek(0)
+            signature = uploaded_file.read(5)
+            uploaded_file.seek(0)
+
+            if signature != b"%PDF-":
+                raise serializers.ValidationError({
+                    "file": "محتوای فایل PDF معتبر نیست."
+                })
+
+            return attrs
+
+        if extension == ".pdf":
+            raise serializers.ValidationError({
+                "file": "فایل PDF نمی‌تواند به‌عنوان تصویر ثبت شود."
+            })
+
+        try:
+
+            uploaded_file.seek(0)
+
+            with warnings.catch_warnings():
+
+                warnings.simplefilter(
+                    "error",
+                    Image.DecompressionBombWarning,
+                )
+
+                image = Image.open(uploaded_file)
+
+                detected_format = image.format
+
+                width, height = image.size
+
+                if width <= 0 or height <= 0:
+                    raise serializers.ValidationError({
+                        "file": "ابعاد تصویر معتبر نیست."
+                    })
+
+                if width * height > self.MAX_IMAGE_PIXELS:
+                    raise serializers.ValidationError({
+                        "file": "ابعاد تصویر بیش از حد مجاز است."
+                    })
+
+                expected_format = self.IMAGE_FORMATS.get(
+                    extension
+                )
+
+                if detected_format != expected_format:
+                    raise serializers.ValidationError({
+                        "file": (
+                            "محتوای تصویر با پسوند فایل "
+                            "هماهنگ نیست."
+                        )
+                    })
+
+                image.verify()
+
+        except serializers.ValidationError:
+            raise
+
+        except (
+            UnidentifiedImageError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+            OSError,
+            ValueError,
+        ):
+            raise serializers.ValidationError({
+                "file": "تصویر معتبر نیست یا قابل پردازش نیست."
+            })
+
+        finally:
+            uploaded_file.seek(0)
+
+        return attrs
+
     def validate_metadata(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "اطلاعات تکمیلی باید یک شیء معتبر باشد."
             )
+
         return value
 
 
+# =========================================================
+# PAGE BUILDER
+# =========================================================
+
 class SitePageSectionSerializer(serializers.ModelSerializer):
-    """Public representation of enabled page sections."""
 
     class Meta:
         model = SitePageSection
@@ -339,7 +515,6 @@ class SitePageSectionSerializer(serializers.ModelSerializer):
 
 
 class SitePageSectionAdminSerializer(serializers.ModelSerializer):
-    """Administrative page builder serializer."""
 
     ALLOWED_SECTION_TYPES = {
         "hero",
@@ -360,24 +535,30 @@ class SitePageSectionAdminSerializer(serializers.ModelSerializer):
     }
 
     def validate_section_type(self, value):
+
         if value not in self.ALLOWED_SECTION_TYPES:
             raise serializers.ValidationError(
                 "نوع این بخش در صفحه‌ساز پشتیبانی نمی‌شود."
             )
+
         return value
 
     def validate_content(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "محتوای بخش باید یک شیء معتبر باشد."
             )
+
         return value
 
     def validate_settings(self, value):
+
         if not isinstance(value, dict):
             raise serializers.ValidationError(
                 "تنظیمات بخش باید یک شیء معتبر باشد."
             )
+
         return value
 
     class Meta:
@@ -395,11 +576,18 @@ class SitePageSectionAdminSerializer(serializers.ModelSerializer):
             "updated_at",
             "updated_by",
         ]
-        read_only_fields = ["id", "updated_at", "updated_by"]
+        read_only_fields = [
+            "id",
+            "updated_at",
+            "updated_by",
+        ]
 
+
+# =========================================================
+# NAVIGATION
+# =========================================================
 
 class SiteNavigationLinkSerializer(serializers.ModelSerializer):
-    """Public representation of enabled navigation links."""
 
     class Meta:
         model = SiteNavigationLink
@@ -416,9 +604,9 @@ class SiteNavigationLinkSerializer(serializers.ModelSerializer):
 
 
 class SiteNavigationLinkAdminSerializer(serializers.ModelSerializer):
-    """Administrative navigation editor serializer."""
 
     def validate_url(self, value):
+
         value = value.strip()
 
         if not value:
@@ -461,4 +649,8 @@ class SiteNavigationLinkAdminSerializer(serializers.ModelSerializer):
             "updated_at",
             "updated_by",
         ]
-        read_only_fields = ["id", "updated_at", "updated_by"]
+        read_only_fields = [
+            "id",
+            "updated_at",
+            "updated_by",
+        ]
