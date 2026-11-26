@@ -194,6 +194,7 @@ class StoreConfigurationSerializer(serializers.ModelSerializer):
         fields = [
             "store_name",
             "slogan",
+            "site_url",
             "support_phone",
             "support_email",
             "seller_phone",
@@ -220,6 +221,7 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
             "id",
             "store_name",
             "slogan",
+            "site_url",
             "support_phone",
             "support_email",
             "seller_phone",
@@ -255,6 +257,43 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
 
     def validate_slogan(self, value):
         return value.strip()
+
+    def validate_site_url(self, value):
+
+        value = value.strip()
+
+        if not value:
+            return value
+
+        if any(ord(char) < 32 for char in value):
+            raise serializers.ValidationError(
+                "آدرس سایت دارای نویسه غیرمجاز است."
+            )
+
+        parsed = urlsplit(value)
+
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+        ):
+            raise serializers.ValidationError(
+                "آدرس سایت باید با HTTP یا HTTPS معتبر باشد."
+            )
+
+        try:
+            if not parsed.hostname:
+                raise ValueError("Missing hostname")
+
+            parsed.port
+
+        except ValueError:
+            raise serializers.ValidationError(
+                "دامنه یا شماره پورت آدرس سایت معتبر نیست."
+            )
+
+        return value
 
     def validate_seller_phone(self, value):
 
