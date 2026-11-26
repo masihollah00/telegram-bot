@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ShieldCheck,
   LockKeyhole,
@@ -12,12 +12,39 @@ import {
   ArrowLeft,
   Globe,
   ExternalLink,
-  CheckCircle2,
   Store,
   RefreshCw,
+  LogOut,
+  CheckCircle2,
+  LoaderCircle,
 } from "lucide-react";
 
 type Step = "website" | "login";
+
+type AdminUser = {
+  id: number;
+  username: string;
+  isStaff: boolean;
+  isSuperuser: boolean;
+};
+
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE_URL || ""
+).replace(/\/+$/, "");
+
+const AUTH_PATH = "/api/store/admin/auth";
+
+async function readResponse(response: Response) {
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.success) {
+    throw new Error(
+      data?.message || `خطای سرور (${response.status})`
+    );
+  }
+
+  return data;
+}
 
 export default function AdminPage() {
   const [step, setStep] = useState<Step>("website");
@@ -25,7 +52,22 @@ export default function AdminPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [admin, setAdmin] = useState<AdminUser | null>(null);
+  const [successMessage, setSuccessMessage] = useState("");
+
+  useEffect(() => {
+    const savedWebsite = localStorage.getItem(
+      "jalali_admin_website"
+    );
+
+    if (savedWebsite) {
+      setWebsite(savedWebsite);
+      setStep("login");
+    }
+  }, []);
 
   function normalizeWebsite(value: string) {
     let result = value.trim();
@@ -39,7 +81,10 @@ export default function AdminPage() {
     try {
       const parsed = new URL(result);
 
-      if (!["http:", "https:"].includes(parsed.protocol)) {
+      if (
+        parsed.protocol !== "https:" &&
+        parsed.protocol !== "http:"
+      ) {
         return "";
       }
 
@@ -49,19 +94,26 @@ export default function AdminPage() {
     }
   }
 
-  function submitWebsite(event: React.FormEvent<HTMLFormElement>) {
+  function submitWebsite(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     const normalized = normalizeWebsite(website);
 
     if (!normalized) {
-      setError("آدرس سایت معتبر نیست. آدرس کامل سایت را وارد کن.");
+      setError("آدرس سایت معتبر نیست.");
       return;
     }
 
     setError("");
     setWebsite(normalized);
-    localStorage.setItem("jalali_admin_website", normalized);
+
+    localStorage.setItem(
+      "jalali_admin_website",
+      normalized
+    );
+
     setStep("login");
   }
 
@@ -69,14 +121,133 @@ export default function AdminPage() {
     setStep("website");
     setPassword("");
     setError("");
+    setSuccessMessage("");
   }
 
-  function submitLogin(event: React.FormEvent<HTMLFormElement>) {
+  async function submitLogin(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
-    setError(
-      "احراز هویت سرور هنوز به این صفحه متصل نشده است. ورود مدیر تا زمان اتصال امن بک‌اند فعال نیست."
-    );
+    setError("");
+    setSuccessMessage("");
+
+    if (!API_BASE) {
+      setError(
+        "آدرس API بک‌اند تنظیم نشده است. ابتدا متغیر NEXT_PUBLIC_API_BASE_URL را در تنظیمات محیطی سرویس فرانت‌اند ثبت کن."
+      );
+      return;
+    }
+
+    if (!username.trim() || !password) {
+      setError("نام کاربری و رمز عبور را وارد کن.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const csrfResponse = await fetch(
+        `${API_BASE}${AUTH_PATH}/csrf/`,
+        {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const csrfData = await readResponse(csrfResponse);
+      const csrfToken = csrfData.csrfToken;
+
+      if (!csrfToken) {
+        throw new Error(
+          "دریافت توکن امنیتی از سرور ناموفق بود."
+        );
+      }
+
+      const loginResponse = await fetch(
+        `${API_BASE}${AUTH_PATH}/login/`,
+        {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "X-CSRFToken": csrfToken,
+          },
+          body: JSON.stringify({
+            username: username.trim(),
+            password,
+          }),
+        }
+      );
+
+      const loginData = await readResponse(loginResponse);
+
+      setAdmin(loginData.user);
+      setPassword("");
+      setSuccessMessage(
+        "ورود مدیر با موفقیت توسط سرور تأیید شد."
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "ارتباط با سرور برقرار نشد."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logoutAdmin() {
+    if (!API_BASE) return;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const csrfResponse = await fetch(
+        `${API_BASE}${AUTH_PATH}/csrf/`,
+        {
+          credentials: "include",
+          cache: "no-store",
+        }
+      );
+
+      const csrfData = await readResponse(csrfResponse);
+
+      const response = await fetch(
+        `${API_BASE}${AUTH_PATH}/logout/`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfData.csrfToken,
+          },
+          body: JSON.stringify({}),
+        }
+      );
+
+      await readResponse(response);
+
+      setAdmin(null);
+      setSuccessMessage("");
+      setError("");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "خروج از حساب انجام نشد."
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -107,7 +278,60 @@ export default function AdminPage() {
         </header>
 
         <div className="rounded-[30px] border border-[#bd9568]/25 bg-[#141311]/95 p-6 shadow-2xl shadow-black/50 sm:p-8">
-          {step === "website" ? (
+          {admin ? (
+            <div className="space-y-6">
+              <div className="text-center">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+                  <CheckCircle2 size={32} />
+                </div>
+
+                <h2 className="text-xl font-bold text-[#e4bd8c]">
+                  ورود تأیید شد
+                </h2>
+
+                <p className="mt-2 text-sm leading-7 text-white/50">
+                  هویت مدیر توسط سرور بررسی و تأیید شده است.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[#bd9568]/20 bg-black/30 p-4">
+                <p className="text-xs text-white/40">
+                  حساب مدیر فعال
+                </p>
+
+                <p className="mt-2 font-bold text-white">
+                  {admin.username}
+                </p>
+
+                <p className="mt-2 text-xs text-[#e4bd8c]">
+                  {admin.isSuperuser
+                    ? "مدیر ارشد سیستم"
+                    : "مدیر فروشگاه"}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+                <p className="text-xs leading-7 text-amber-200/80">
+                  احراز هویت فعال است. بخش‌های داشبورد و مدیریت
+                  فروشگاه هنوز باید به APIهای مدیریتی متصل شوند.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={loading}
+                onClick={logoutAdmin}
+                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-red-500/25 bg-red-500/10 py-4 font-bold text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+              >
+                {loading ? (
+                  <LoaderCircle className="animate-spin" size={19} />
+                ) : (
+                  <LogOut size={19} />
+                )}
+                خروج امن از حساب
+              </button>
+            </div>
+          ) : step === "website" ? (
             <>
               <div className="mb-7 flex items-center gap-4">
                 <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#bd9568]/20 bg-[#bd9568]/10 text-[#e4bd8c]">
@@ -119,7 +343,7 @@ export default function AdminPage() {
                     اتصال فروشگاه
                   </h2>
                   <p className="mt-1 text-xs text-white/45">
-                    ابتدا آدرس سایت مورد مدیریت را وارد کن
+                    آدرس سایت مورد مدیریت را وارد کن
                   </p>
                 </div>
               </div>
@@ -127,7 +351,7 @@ export default function AdminPage() {
               <form onSubmit={submitWebsite} className="space-y-5">
                 <div>
                   <label className="mb-2 block text-sm text-white/75">
-                    آدرس جدید سایت
+                    آدرس سایت
                   </label>
 
                   <div className="flex items-center gap-3 rounded-2xl border border-[#bd9568]/25 bg-black/40 px-4 transition focus-within:border-[#e4bd8c]">
@@ -150,7 +374,7 @@ export default function AdminPage() {
                   </div>
 
                   <p className="mt-2 text-[11px] leading-6 text-white/40">
-                    آدرس فروشگاه فعلی یا دامنه جدیدی را که می‌خواهی مدیریت کنی وارد کن.
+                    آدرس فروشگاهی را که می‌خواهی مدیریت کنی وارد کن.
                   </p>
                 </div>
 
@@ -176,7 +400,9 @@ export default function AdminPage() {
                 </div>
 
                 <p className="text-[11px] leading-6 text-white/45">
-                  ثبت آدرس در این مرحله فقط برای نگهداری تنظیم اولیه پنل در همین مرورگر است. اتصال واقعی به سرور و اعمال تغییرات سایت در مراحل بعدی پیاده‌سازی می‌شود.
+                  این آدرس برای شناسایی فروشگاه انتخاب‌شده نگهداری
+                  می‌شود. آدرس API بک‌اند جداگانه در تنظیمات محیطی
+                  سرویس ثبت می‌شود.
                 </p>
               </div>
             </>
@@ -191,7 +417,7 @@ export default function AdminPage() {
                   <div>
                     <h2 className="font-bold">ورود مدیر</h2>
                     <p className="mt-1 text-xs text-white/45">
-                      ورود به مرکز مدیریت JALALI
+                      ورود امن به مرکز مدیریت JALALI
                     </p>
                   </div>
                 </div>
@@ -279,17 +505,28 @@ export default function AdminPage() {
                 </div>
 
                 {error && (
-                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-6 text-amber-200">
+                  <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs leading-6 text-red-300">
                     {error}
+                  </div>
+                )}
+
+                {successMessage && (
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs leading-6 text-emerald-300">
+                    {successMessage}
                   </div>
                 )}
 
                 <button
                   type="submit"
-                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-l from-[#e5c18e] to-[#a97845] py-4 font-bold text-black shadow-lg shadow-[#bd9568]/10 transition hover:brightness-110"
+                  disabled={loading}
+                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-l from-[#e5c18e] to-[#a97845] py-4 font-bold text-black shadow-lg shadow-[#bd9568]/10 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  ورود به پنل مدیریت
-                  <ArrowLeft size={19} />
+                  {loading ? (
+                    <LoaderCircle className="animate-spin" size={19} />
+                  ) : (
+                    <ArrowLeft size={19} />
+                  )}
+                  {loading ? "در حال بررسی..." : "ورود به پنل مدیریت"}
                 </button>
               </form>
 
@@ -300,7 +537,9 @@ export default function AdminPage() {
                 </div>
 
                 <p className="text-[11px] leading-6 text-white/50">
-                  ورود واقعی باید از طریق احراز هویت امن سرور انجام شود. این فرم هنوز به سیستم ورود بک‌اند متصل نیست و اطلاعات ورود را ارسال نمی‌کند.
+                  اطلاعات ورود از طریق ارتباط امن به بک‌اند ارسال
+                  می‌شود. نشست مدیریتی با کوکی سرور نگهداری می‌شود
+                  و رمز عبور در مرورگر ذخیره نمی‌شود.
                 </p>
               </div>
             </>
