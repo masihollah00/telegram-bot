@@ -82,7 +82,7 @@ def get_store_configuration():
         "store_name": getattr(
             settings,
             "STORE_NAME",
-            "JALALI COSMETICS",
+            "JALALI",
         ),
         "slogan": getattr(
             settings,
