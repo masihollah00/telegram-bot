@@ -407,7 +407,7 @@ export default function CategoriesPage() {
                       key={category.id}
                     >
                       <Link
-                        href={`/products?category=${encodeURIComponent(category.slug)}`}
+                        href={`/categories/${encodeURIComponent(category.slug)}`}
                         className="card-link"
                         aria-label={`مشاهده محصولات دسته ${category.name}`}
                       >
