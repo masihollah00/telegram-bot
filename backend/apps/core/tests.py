@@ -3,8 +3,6 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from rest_framework.exceptions import ValidationError
-
 from .models import (
     StoreConfiguration,
     SiteTheme,
@@ -35,38 +33,34 @@ class StoreConfigurationTests(TestCase):
 
         self.assertEqual(first.pk, 1)
         self.assertEqual(second.pk, 1)
-        self.assertEqual(
-            StoreConfiguration.objects.count(),
-            1,
-        )
+        self.assertEqual(StoreConfiguration.objects.count(), 1)
 
         self.assertEqual(
             StoreConfiguration.objects.get(pk=1).store_name,
             "JALALI COSMETICS UPDATED",
         )
 
-    def test_public_serializer_does_not_expose_admin_fields(self):
+    def test_public_serializer_exposes_only_public_fields(self):
         configuration = StoreConfiguration.objects.create(
             store_name="JALALI COSMETICS",
         )
 
-        serializer = StoreConfigurationSerializer(
-            configuration,
-        )
+        serializer = StoreConfigurationSerializer(configuration)
+        data = serializer.data
 
-        self.assertNotIn(
-            "updated_by",
-            serializer.data,
-        )
+        self.assertNotIn("updated_by", data)
+        self.assertNotIn("id", data)
 
-        self.assertNotIn(
-            "id",
-            serializer.data,
-        )
+        # این فیلدها طبق طراحی فعلی در خروجی عمومی وجود دارند.
+        self.assertIn("maintenance_mode", data)
+        self.assertIn("maintenance_message", data)
 
-        self.assertNotIn(
-            "maintenance_mode",
-            serializer.data,
+    def test_public_serializer_fields_are_read_only(self):
+        serializer = StoreConfigurationSerializer()
+
+        self.assertEqual(
+            set(serializer.Meta.read_only_fields),
+            set(serializer.Meta.fields),
         )
 
 
@@ -90,9 +84,7 @@ class SiteThemeTests(TestCase):
         self.assertTrue(second.is_active)
 
         self.assertEqual(
-            SiteTheme.objects.filter(
-                is_active=True,
-            ).count(),
+            SiteTheme.objects.filter(is_active=True).count(),
             1,
         )
 
@@ -110,10 +102,7 @@ class SiteThemeTests(TestCase):
             }
         )
 
-        self.assertTrue(
-            serializer.is_valid(),
-            serializer.errors,
-        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_unknown_color_key_is_rejected(self):
         serializer = SiteThemeAdminSerializer(
@@ -125,14 +114,8 @@ class SiteThemeTests(TestCase):
             }
         )
 
-        self.assertFalse(
-            serializer.is_valid(),
-        )
-
-        self.assertIn(
-            "colors",
-            serializer.errors,
-        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("colors", serializer.errors)
 
     def test_unknown_css_variable_is_rejected(self):
         serializer = SiteThemeAdminSerializer(
@@ -144,14 +127,8 @@ class SiteThemeTests(TestCase):
             }
         )
 
-        self.assertFalse(
-            serializer.is_valid(),
-        )
-
-        self.assertIn(
-            "custom_css_variables",
-            serializer.errors,
-        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("custom_css_variables", serializer.errors)
 
 
 class SitePageSectionTests(TestCase):
@@ -175,10 +152,7 @@ class SitePageSectionTests(TestCase):
             }
         )
 
-        self.assertTrue(
-            serializer.is_valid(),
-            serializer.errors,
-        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_unsupported_section_type_is_rejected(self):
         serializer = SitePageSectionAdminSerializer(
@@ -191,14 +165,8 @@ class SitePageSectionTests(TestCase):
             }
         )
 
-        self.assertFalse(
-            serializer.is_valid(),
-        )
-
-        self.assertIn(
-            "section_type",
-            serializer.errors,
-        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("section_type", serializer.errors)
 
     def test_duplicate_page_section_key_is_rejected_by_database(self):
         SitePageSection.objects.create(
@@ -228,10 +196,7 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertTrue(
-            serializer.is_valid(),
-            serializer.errors,
-        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_https_navigation_url_is_accepted(self):
         serializer = SiteNavigationLinkAdminSerializer(
@@ -243,10 +208,7 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertTrue(
-            serializer.is_valid(),
-            serializer.errors,
-        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_javascript_navigation_url_is_rejected(self):
         serializer = SiteNavigationLinkAdminSerializer(
@@ -257,14 +219,8 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertFalse(
-            serializer.is_valid(),
-        )
-
-        self.assertIn(
-            "url",
-            serializer.errors,
-        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("url", serializer.errors)
 
     def test_protocol_relative_url_is_rejected(self):
         serializer = SiteNavigationLinkAdminSerializer(
@@ -275,14 +231,8 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertFalse(
-            serializer.is_valid(),
-        )
-
-        self.assertIn(
-            "url",
-            serializer.errors,
-        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("url", serializer.errors)
 
 
 class SiteManagementAdminTests(TestCase):
@@ -295,13 +245,8 @@ class SiteManagementAdminTests(TestCase):
         )
 
     def test_admin_user_is_created(self):
-        self.assertTrue(
-            self.admin_user.is_staff,
-        )
-
-        self.assertTrue(
-            self.admin_user.is_superuser,
-        )
+        self.assertTrue(self.admin_user.is_staff)
+        self.assertTrue(self.admin_user.is_superuser)
 
     def test_theme_update_tracks_admin_user(self):
         theme = SiteTheme.objects.create(
@@ -311,7 +256,6 @@ class SiteManagementAdminTests(TestCase):
 
         theme.updated_by = self.admin_user
         theme.save()
-
         theme.refresh_from_db()
 
         self.assertEqual(
