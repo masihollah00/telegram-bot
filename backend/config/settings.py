@@ -1,3 +1,4 @@
+
 import os
 from pathlib import Path
 
@@ -18,7 +19,10 @@ def env_list(name, default=""):
 
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
-    os.getenv("SECRET_KEY", "jalali-cosmetics-development-key-change-before-production"),
+    os.getenv(
+        "SECRET_KEY",
+        "jalali-cosmetics-development-key-change-before-production",
+    ),
 )
 
 DEBUG = env_bool("DJANGO_DEBUG", env_bool("DEBUG", False))
@@ -29,6 +33,7 @@ ALLOWED_HOSTS = env_list(
 )
 
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
+
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -47,6 +52,7 @@ INSTALLED_APPS = [
     "apps.customers",
 ]
 
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -59,7 +65,9 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+
 ROOT_URLCONF = "config.urls"
+
 
 TEMPLATES = [
     {
@@ -77,14 +85,17 @@ TEMPLATES = [
     },
 ]
 
+
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 if DATABASE_URL:
     try:
         import dj_database_url
+
         DATABASES = {
             "default": dj_database_url.parse(
                 DATABASE_URL,
@@ -92,6 +103,7 @@ if DATABASE_URL:
                 ssl_require=not DEBUG,
             )
         }
+
     except ImportError:
         DATABASES = {
             "default": {
@@ -99,6 +111,7 @@ if DATABASE_URL:
                 "NAME": BASE_DIR / "db.sqlite3",
             }
         }
+
 else:
     DATABASES = {
         "default": {
@@ -106,6 +119,7 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -122,10 +136,12 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
 LANGUAGE_CODE = "fa-ir"
 TIME_ZONE = "Asia/Tehran"
 USE_I18N = True
 USE_TZ = True
+
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -134,19 +150,35 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
+
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
     ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+
+    "DEFAULT_PAGINATION_CLASS": (
+        "rest_framework.pagination.PageNumberPagination"
+    ),
+
     "PAGE_SIZE": 24,
+
+    # نرخ‌های محدودیت درخواست برای عملیات مدیریتی
+    # این نرخ‌ها پس از اتصال کلاس‌های throttle به Viewها فعال می‌شوند.
+    "DEFAULT_THROTTLE_RATES": {
+        "admin_write": "60/hour",
+        "admin_upload": "20/hour",
+        "admin_login": "10/hour",
+    },
 }
+
 
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
 
@@ -157,15 +189,28 @@ if not CORS_ALLOWED_ORIGINS and DEBUG:
 else:
     CORS_ALLOW_ALL_ORIGINS = False
 
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+SECURE_PROXY_SSL_HEADER = (
+    "HTTP_X_FORWARDED_PROTO",
+    "https",
+)
 
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
+
 if not DEBUG:
-    SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", True)
-    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_SSL_REDIRECT = env_bool(
+        "SECURE_SSL_REDIRECT",
+        True,
+    )
+
+    SECURE_HSTS_SECONDS = int(
+        os.getenv("SECURE_HSTS_SECONDS", "31536000")
+    )
+
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
