@@ -22,7 +22,7 @@ def site_asset_upload_path(instance, filename):
 
 class StoreConfiguration(models.Model):
     """
-    Central public configuration for JALALI COSMETICS.
+    Central public configuration for JALALI.
 
     Never store payment credentials, private API keys,
     passwords or other secrets in this public configuration.
@@ -30,7 +30,7 @@ class StoreConfiguration(models.Model):
 
     store_name = models.CharField(
         max_length=150,
-        default="JALALI COSMETICS",
+        default="JALALI",
         verbose_name="نام فروشگاه",
     )
 
@@ -60,6 +60,18 @@ class StoreConfiguration(models.Model):
         max_length=20,
         blank=True,
         verbose_name="کد پستی",
+    )
+
+    seller_phone = models.CharField(
+        max_length=20,
+        default="09194516434",
+        verbose_name="شماره تماس فروشنده",
+    )
+
+    seller_telegram = models.CharField(
+        max_length=100,
+        default="@Amir_jalali110",
+        verbose_name="آیدی تلگرام فروشنده",
     )
 
     currency = models.CharField(
@@ -130,9 +142,6 @@ class StoreConfiguration(models.Model):
 class SiteTheme(models.Model):
     """
     Database-backed design system for the storefront.
-
-    The mobile management application will update these
-    values through authenticated administrative APIs.
     """
 
     name = models.CharField(
@@ -218,9 +227,6 @@ class SiteTheme(models.Model):
 class SiteAsset(models.Model):
     """
     Central media library for website images and files.
-
-    Uploaded files are stored by the configured Django
-    storage backend, not in browser local storage.
     """
 
     class AssetType(models.TextChoices):
@@ -297,10 +303,6 @@ class SiteAsset(models.Model):
 class SitePageSection(models.Model):
     """
     Editable content blocks for individual website pages.
-
-    Each section stores structured content as JSON.
-    The storefront will render supported section types
-    using real database content.
     """
 
     page_key = models.SlugField(
