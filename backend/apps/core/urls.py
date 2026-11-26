@@ -1,4 +1,3 @@
-
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
@@ -22,12 +21,14 @@ from .admin_auth import (
     admin_logout,
 )
 
+from .admin_dashboard import AdminDashboardView
+
 
 app_name = "jalali_core"
 
 
 # ---------------------------------------------------------
-# ROUTER — CENTRAL WEBSITE MANAGEMENT
+# CENTRAL ADMIN ROUTER
 # ---------------------------------------------------------
 
 router = DefaultRouter()
@@ -63,9 +64,7 @@ router.register(
 
 urlpatterns = [
 
-    # -----------------------------------------------------
     # ADMIN AUTHENTICATION
-    # -----------------------------------------------------
 
     path(
         "admin/auth/csrf/",
@@ -91,9 +90,15 @@ urlpatterns = [
         name="admin-auth-logout",
     ),
 
-    # -----------------------------------------------------
+    # ADMIN DASHBOARD
+
+    path(
+        "admin/dashboard/",
+        AdminDashboardView.as_view(),
+        name="admin-dashboard",
+    ),
+
     # PUBLIC STORE INFORMATION
-    # -----------------------------------------------------
 
     path(
         "information/",
@@ -101,9 +106,7 @@ urlpatterns = [
         name="store-information",
     ),
 
-    # -----------------------------------------------------
     # PUBLIC DESIGN SYSTEM
-    # -----------------------------------------------------
 
     path(
         "design/active/",
@@ -111,10 +114,7 @@ urlpatterns = [
         name="active-site-theme",
     ),
 
-    # -----------------------------------------------------
-    # PUBLIC PAGE BUILDER
-    # Example: ?page=home
-    # -----------------------------------------------------
+    # PUBLIC PAGE SECTIONS
 
     path(
         "pages/sections/",
@@ -122,10 +122,7 @@ urlpatterns = [
         name="public-site-sections",
     ),
 
-    # -----------------------------------------------------
     # PUBLIC NAVIGATION
-    # Example: ?placement=header
-    # -----------------------------------------------------
 
     path(
         "navigation/",
@@ -133,9 +130,7 @@ urlpatterns = [
         name="public-site-navigation",
     ),
 
-    # -----------------------------------------------------
     # STORE CONFIGURATION MANAGEMENT
-    # -----------------------------------------------------
 
     path(
         "admin/configuration/",
@@ -143,19 +138,15 @@ urlpatterns = [
         name="admin-store-configuration",
     ),
 
-    # -----------------------------------------------------
-    # CENTRAL GALLERY IMAGE ASSIGNMENT
-    # -----------------------------------------------------
+    # CENTRAL MEDIA ASSIGNMENT
 
     path(
         "admin/media/assign/",
-        AssignGalleryAssetView.as_view(),
+        AssignGalleryAssetView,
         name="admin-media-assign",
     ),
 
-    # -----------------------------------------------------
-    # ALL MANAGEMENT ROUTER ENDPOINTS
-    # -----------------------------------------------------
+    # ROUTER ENDPOINTS
 
     path(
         "",
