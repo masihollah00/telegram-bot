@@ -1,3 +1,4 @@
+
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
@@ -6,38 +7,43 @@ from django.urls import include, path
 def health_check(request):
     return JsonResponse({
         "success": True,
-        "service": "JALALI COSMETICS API",
+        "service": "JALALI API",
         "status": "healthy",
     })
 
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
+    path(
+        "admin/",
+        admin.site.urls,
+    ),
 
-    # وضعیت سرور
+    # وضعیت و سلامت سرور
     path(
         "api/health/",
         health_check,
         name="health-check",
     ),
 
-    # API عمومی فروشگاه
+    # API عمومی و تنظیمات مرکزی فروشگاه
     path(
         "api/store/",
         include("apps.core.urls"),
     ),
+
+    # محصولات، دسته‌بندی‌ها و برندها
     path(
         "api/store/",
         include("apps.products.urls"),
     ),
 
-    # API سفارش‌های مشتری
+    # سفارش‌ها و پرداخت‌ها
     path(
         "api/store/",
         include("apps.orders.urls"),
     ),
 
-    # API حساب مشتری
+    # حساب مشتریان و همکاری عمده
     path(
         "api/store/",
         include("apps.customers.urls"),
