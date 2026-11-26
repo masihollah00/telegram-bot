@@ -1,4 +1,8 @@
 
+import hashlib
+import secrets
+from uuid import uuid4
+
 from django.db import transaction
 from rest_framework import serializers
 
@@ -7,6 +11,7 @@ from .models import Order, OrderItem, OrderStatusHistory
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = OrderItem
         fields = (
@@ -24,6 +29,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 
 class OrderStatusHistorySerializer(serializers.ModelSerializer):
+
     changed_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -40,6 +46,7 @@ class OrderStatusHistorySerializer(serializers.ModelSerializer):
     def get_changed_by_name(self, obj):
         if not obj.changed_by:
             return None
+
         return (
             obj.changed_by.get_full_name()
             or obj.changed_by.get_username()
@@ -47,7 +54,9 @@ class OrderStatusHistorySerializer(serializers.ModelSerializer):
 
 
 class OrderSerializer(serializers.ModelSerializer):
+
     items = OrderItemSerializer(many=True, read_only=True)
+
     status_history = OrderStatusHistorySerializer(
         many=True,
         read_only=True,
@@ -84,27 +93,50 @@ class OrderSerializer(serializers.ModelSerializer):
             "items",
             "status_history",
         )
+
         read_only_fields = fields
 
 
 class OrderCreateItemSerializer(serializers.Serializer):
+
     product_id = serializers.UUIDField()
-    quantity = serializers.IntegerField(min_value=1)
+
+    quantity = serializers.IntegerField(
+        min_value=1,
+    )
 
 
 class OrderCreateSerializer(serializers.Serializer):
-    customer_name = serializers.CharField(max_length=160)
-    customer_phone = serializers.CharField(max_length=20)
+
+    customer_name = serializers.CharField(
+        max_length=160,
+        trim_whitespace=True,
+    )
+
+    customer_phone = serializers.CharField(
+        max_length=20,
+    )
 
     customer_email = serializers.EmailField(
         required=False,
         allow_blank=True,
     )
 
-    province = serializers.CharField(max_length=100)
-    city = serializers.CharField(max_length=100)
-    postal_code = serializers.CharField(max_length=20)
-    shipping_address = serializers.CharField()
+    province = serializers.CharField(
+        max_length=100,
+    )
+
+    city = serializers.CharField(
+        max_length=100,
+    )
+
+    postal_code = serializers.CharField(
+        max_length=20,
+    )
+
+    shipping_address = serializers.CharField(
+        trim_whitespace=True,
+    )
 
     customer_note = serializers.CharField(
         required=False,
@@ -118,6 +150,7 @@ class OrderCreateSerializer(serializers.Serializer):
     )
 
     def validate_customer_phone(self, value):
+
         normalized = (
             value.strip()
             .replace(" ", "")
@@ -137,6 +170,7 @@ class OrderCreateSerializer(serializers.Serializer):
         return normalized
 
     def validate(self, attrs):
+
         product_ids = [
             item["product_id"]
             for item in attrs["items"]
@@ -151,9 +185,23 @@ class OrderCreateSerializer(serializers.Serializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        from uuid import uuid4
 
-        user = self.context["request"].user
+        request = self.context.get("request")
+
+        if request is None:
+            raise serializers.ValidationError(
+                "اطلاعات درخواست معتبر نیست."
+            )
+
+        request_user = request.user
+
+        if request_user and request_user.is_authenticated:
+            user = request_user
+            customer_type = Order.CustomerType.REGISTERED
+        else:
+            user = None
+            customer_type = Order.CustomerType.GUEST
+
         items_data = validated_data.pop("items")
 
         product_ids = [
@@ -161,8 +209,7 @@ class OrderCreateSerializer(serializers.Serializer):
             for item in items_data
         ]
 
-        # قفل‌کردن ردیف محصولات تا پایان تراکنش
-        # برای جلوگیری از ثبت هم‌زمان سفارش بیش از موجودی
+        # قفل محصولات برای جلوگیری از سفارش هم‌زمان
         locked_products = list(
             Product.objects
             .select_for_update()
@@ -186,8 +233,8 @@ class OrderCreateSerializer(serializers.Serializer):
         prepared_items = []
         subtotal = 0
 
-        # اعتبارسنجی موجودی و تعداد سفارش
         for item in items_data:
+
             product = product_map[item["product_id"]]
             quantity = item["quantity"]
 
@@ -225,32 +272,54 @@ class OrderCreateSerializer(serializers.Serializer):
                     )
                 })
 
-            line_total = product.public_price * quantity
+            unit_price = product.public_price
+            line_total = unit_price * quantity
+
             subtotal += line_total
 
             prepared_items.append({
                 "product": product,
                 "quantity": quantity,
-                "unit_price": product.public_price,
+                "unit_price": unit_price,
                 "line_total": line_total,
             })
 
-        # رزرو موجودی در همان تراکنش ثبت سفارش
+        # رزرو موجودی در تراکنش ثبت سفارش
         for item in prepared_items:
+
             product = item["product"]
+
             product.stock_quantity -= item["quantity"]
 
-            product.save(update_fields=[
-                "stock_quantity",
-                "availability",
-                "updated_at",
-            ])
+            product.save(
+                update_fields=[
+                    "stock_quantity",
+                    "availability",
+                    "updated_at",
+                ]
+            )
 
-        # محاسبه مبلغ صرفاً در سرور
+        # تولید توکن محرمانه مخصوص سفارش مهمان
+        raw_tracking_token = None
+        token_hash = ""
+
+        if customer_type == Order.CustomerType.GUEST:
+
+            raw_tracking_token = secrets.token_urlsafe(32)
+
+            token_hash = hashlib.sha256(
+                raw_tracking_token.encode("utf-8")
+            ).hexdigest()
+
         order = Order.objects.create(
             order_number=f"JAL-{uuid4().hex[:12].upper()}",
             customer=user,
+            customer_type=customer_type,
+            guest_tracking_token_hash=token_hash,
             subtotal=subtotal,
+            discount_amount=0,
+            shipping_amount=0,
+            tax_amount=0,
             total_amount=subtotal,
             **validated_data,
         )
@@ -263,6 +332,7 @@ class OrderCreateSerializer(serializers.Serializer):
                 product_sku=item["product"].sku,
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],
+                discount_amount=0,
                 line_total=item["line_total"],
             )
             for item in prepared_items
@@ -272,8 +342,12 @@ class OrderCreateSerializer(serializers.Serializer):
             order=order,
             old_status="",
             new_status=Order.Status.PENDING,
-            description="سفارش توسط مشتری ثبت شد و موجودی آن رزرو شد.",
+            description="سفارش ثبت شد و موجودی محصولات رزرو شد.",
             changed_by=user,
         )
+
+        # این مقدار فقط برای تحویل یک‌باره به View نگهداری می‌شود.
+        # مقدار خام توکن در دیتابیس ذخیره نمی‌شود.
+        order._guest_tracking_token = raw_tracking_token
 
         return order
