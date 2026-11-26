@@ -35,6 +35,11 @@ from .serializers import (
     SiteNavigationLinkAdminSerializer,
 )
 
+from .throttles import (
+    AdminUserRateThrottle,
+    AdminUploadRateThrottle,
+)
+
 from apps.products.models import (
     Product,
     ProductImage,
@@ -43,8 +48,35 @@ from apps.products.models import (
 )
 
 
+# =========================================================
+# WRITE-ONLY THROTTLE MIXIN
+# =========================================================
+
+class WriteThrottleMixin:
+    """
+    اعمال محدودیت درخواست فقط روی عملیات تغییردهنده اطلاعات.
+
+    درخواست‌های GET، HEAD و OPTIONS محدود نمی‌شوند.
+    """
+
+    throttle_classes = [AdminUserRateThrottle]
+
+    def get_throttles(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return []
+
+        return [
+            throttle_class()
+            for throttle_class in self.throttle_classes
+        ]
+
+
+# =========================================================
+# STORE CONFIGURATION
+# =========================================================
+
 def get_store_configuration():
-    """دریافت تنظیمات اصلی فروشگاه."""
+    """دریافت یا ایجاد تنظیمات اصلی فروشگاه."""
 
     defaults = {
         "store_name": getattr(
@@ -90,7 +122,10 @@ class StoreConfigurationPublicView(APIView):
         })
 
 
-class StoreConfigurationAdminView(APIView):
+class StoreConfigurationAdminView(
+    WriteThrottleMixin,
+    APIView,
+):
     """مدیریت تنظیمات فروشگاه."""
 
     permission_classes = [IsAdminUser]
@@ -153,8 +188,12 @@ class StoreConfigurationAdminView(APIView):
         })
 
 
+# =========================================================
+# PUBLIC DESIGN API
+# =========================================================
+
 class ActiveSiteThemeView(APIView):
-    """دریافت تم فعال سایت برای نمایش عمومی."""
+    """دریافت تم فعال سایت."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -241,10 +280,21 @@ class PublicNavigationView(APIView):
         })
 
 
-class AdminBaseViewSet(viewsets.ModelViewSet):
-    """پایه مشترک مدیریت با دسترسی مدیر."""
+# =========================================================
+# ADMIN BASE VIEWSET
+# =========================================================
+
+class AdminBaseViewSet(
+    WriteThrottleMixin,
+    viewsets.ModelViewSet,
+):
+    """پایه مشترک عملیات مدیریتی."""
 
     permission_classes = [IsAdminUser]
+
+    throttle_classes = [
+        AdminUserRateThrottle,
+    ]
 
     parser_classes = [
         JSONParser,
@@ -260,6 +310,10 @@ class AdminBaseViewSet(viewsets.ModelViewSet):
     ordering = ["-pk"]
 
 
+# =========================================================
+# ADMIN THEMES
+# =========================================================
+
 class AdminSiteThemeViewSet(AdminBaseViewSet):
     """مدیریت تم‌های سایت."""
 
@@ -267,7 +321,9 @@ class AdminSiteThemeViewSet(AdminBaseViewSet):
 
     serializer_class = SiteThemeAdminSerializer
 
-    search_fields = ["name"]
+    search_fields = [
+        "name",
+    ]
 
     ordering_fields = [
         "name",
@@ -285,12 +341,20 @@ class AdminSiteThemeViewSet(AdminBaseViewSet):
         )
 
 
+# =========================================================
+# ADMIN MEDIA LIBRARY
+# =========================================================
+
 class AdminSiteAssetViewSet(AdminBaseViewSet):
     """مدیریت گالری مرکزی تصاویر و فایل‌ها."""
 
     queryset = SiteAsset.objects.all()
 
     serializer_class = SiteAssetAdminSerializer
+
+    throttle_classes = [
+        AdminUploadRateThrottle,
+    ]
 
     search_fields = [
         "title",
@@ -338,6 +402,10 @@ class AdminSiteAssetViewSet(AdminBaseViewSet):
         )
 
 
+# =========================================================
+# ADMIN PAGE SECTIONS
+# =========================================================
+
 class AdminSitePageSectionViewSet(AdminBaseViewSet):
     """مدیریت بخش‌های قابل ویرایش صفحات."""
 
@@ -380,6 +448,10 @@ class AdminSitePageSectionViewSet(AdminBaseViewSet):
             updated_by=self.request.user,
         )
 
+
+# =========================================================
+# ADMIN NAVIGATION
+# =========================================================
 
 class AdminSiteNavigationViewSet(AdminBaseViewSet):
     """مدیریت لینک‌های هدر، فوتر و موبایل."""
@@ -426,9 +498,16 @@ class AdminSiteNavigationViewSet(AdminBaseViewSet):
         )
 
 
-class AssignGalleryAssetView(APIView):
+# =========================================================
+# ASSIGN GALLERY IMAGE TO STORE OBJECTS
+# =========================================================
+
+class AssignGalleryAssetView(
+    WriteThrottleMixin,
+    APIView,
+):
     """
-    اتصال یک تصویر ذخیره‌شده در گالری به بخش‌های مختلف فروشگاه.
+    اتصال تصویر گالری به بخش‌های مختلف فروشگاه.
 
     target_type:
         product_main
@@ -438,6 +517,10 @@ class AssignGalleryAssetView(APIView):
     """
 
     permission_classes = [IsAdminUser]
+
+    throttle_classes = [
+        AdminUserRateThrottle,
+    ]
 
     TARGET_TYPES = {
         "product_main",
@@ -501,10 +584,13 @@ class AssignGalleryAssetView(APIView):
                 )
 
                 product.image = file_name
-                product.save(update_fields=[
-                    "image",
-                    "updated_at",
-                ])
+
+                product.save(
+                    update_fields=[
+                        "image",
+                        "updated_at",
+                    ],
+                )
 
                 result = {
                     "target": "product_main",
@@ -528,11 +614,20 @@ class AssignGalleryAssetView(APIView):
                 ) + 1
 
                 set_primary = str(
-                    request.data.get("set_primary", "false")
-                ).lower() in ("true", "1", "yes")
+                    request.data.get(
+                        "set_primary",
+                        "false",
+                    )
+                ).lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
 
                 if set_primary:
-                    gallery.update(is_primary=False)
+                    gallery.update(
+                        is_primary=False,
+                    )
 
                 image = ProductImage.objects.create(
                     product=product,
@@ -560,10 +655,13 @@ class AssignGalleryAssetView(APIView):
                 )
 
                 category.image = file_name
-                category.save(update_fields=[
-                    "image",
-                    "updated_at",
-                ])
+
+                category.save(
+                    update_fields=[
+                        "image",
+                        "updated_at",
+                    ],
+                )
 
                 result = {
                     "target": "category",
@@ -577,7 +675,12 @@ class AssignGalleryAssetView(APIView):
                 )
 
                 brand.logo = file_name
-                brand.save(update_fields=["logo"])
+
+                brand.save(
+                    update_fields=[
+                        "logo",
+                    ],
+                )
 
                 result = {
                     "target": "brand",
