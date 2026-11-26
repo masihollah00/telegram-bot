@@ -2,6 +2,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
+
 import {
   ShieldCheck,
   LockKeyhole,
@@ -28,6 +30,10 @@ import {
   TrendingUp,
 } from "lucide-react";
 
+// =========================================================
+// TYPES
+// =========================================================
+
 type Step = "website" | "login";
 
 type AdminUser = {
@@ -46,22 +52,32 @@ type StoreConfiguration = {
 
 type DashboardData = {
   success: boolean;
+
   dashboard?: {
     generated_at?: string;
     timezone?: string;
     currency?: string;
   };
+
   overview?: {
     total_products?: number;
     active_products?: number;
+    inactive_products?: number;
+
     total_orders?: number;
     today_orders?: number;
-    total_paid_revenue?: number;
-    today_revenue?: number;
-    monthly_revenue?: number;
+    last_seven_days_orders?: number;
+    last_thirty_days_orders?: number;
+
+    total_paid_revenue?: number | string;
+    today_revenue?: number | string;
+    monthly_revenue?: number | string;
+    last_thirty_days_revenue?: number | string;
+
     total_partner_applications?: number;
     pending_partner_applications?: number;
   };
+
   products?: {
     total?: number;
     active?: number;
@@ -70,37 +86,54 @@ type DashboardData = {
     out_of_stock?: number;
     low_stock?: number;
   };
+
   orders?: {
     total?: number;
+    today?: number;
+    last_seven_days?: number;
+    last_thirty_days?: number;
+
     pending?: number;
     processing?: number;
     shipped?: number;
     delivered?: number;
     cancelled?: number;
   };
+
   payments?: {
     paid_orders?: number;
     unpaid_orders?: number;
     pending_orders?: number;
     failed_orders?: number;
     refunded_orders?: number;
+
+    total_paid_revenue?: number | string;
+    today_revenue?: number | string;
+    monthly_revenue?: number | string;
+    last_thirty_days_revenue?: number | string;
   };
+
   wholesale?: {
     total?: number;
     pending?: number;
     approved?: number;
     rejected?: number;
   };
+
   recent_orders?: Array<{
     id: string;
     order_number: string;
     customer_name: string;
+    customer_type: string;
+    status: string;
     status_label: string;
+    payment_status: string;
     payment_status_label: string;
     total_amount: number | string;
     currency: string;
     created_at: string;
   }>;
+
   low_stock_products?: Array<{
     id: string;
     name: string;
@@ -111,6 +144,16 @@ type DashboardData = {
   }>;
 };
 
+type ApiResponse<T = unknown> = {
+  success: boolean;
+  message?: string;
+  data?: T;
+};
+
+// =========================================================
+// API CONFIGURATION
+// =========================================================
+
 const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE_URL || ""
 ).replace(/\/+$/, "");
@@ -119,7 +162,15 @@ const AUTH_PATH = "/api/store/admin/auth";
 const DASHBOARD_PATH = "/api/store/admin/dashboard/";
 const CONFIG_PATH = "/api/store/admin/configuration/";
 
-async function readResponse(response: Response) {
+const WEBSITE_STORAGE_KEY = "jalali_admin_website";
+
+// =========================================================
+// API HELPERS
+// =========================================================
+
+async function readResponse<T = any>(
+  response: Response
+): Promise<T> {
   const data = await response.json().catch(() => null);
 
   if (!response.ok || !data?.success) {
@@ -128,10 +179,12 @@ async function readResponse(response: Response) {
     );
   }
 
-  return data;
+  return data as T;
 }
 
-function formatNumber(value: number | string | undefined) {
+function formatNumber(
+  value: number | string | undefined | null
+) {
   const number = Number(value || 0);
 
   return new Intl.NumberFormat("fa-IR").format(
@@ -139,7 +192,9 @@ function formatNumber(value: number | string | undefined) {
   );
 }
 
-function formatMoney(value: number | string | undefined) {
+function formatMoney(
+  value: number | string | undefined | null
+) {
   return `${formatNumber(value)} تومان`;
 }
 
@@ -156,17 +211,50 @@ function formatDate(value?: string) {
   }).format(date);
 }
 
+function normalizeWebsite(value: string) {
+  let result = value.trim();
+
+  if (!result) return "";
+
+  if (!/^https?:\/\//i.test(result)) {
+    result = "https://" + result;
+  }
+
+  try {
+    const parsed = new URL(result);
+
+    if (
+      parsed.protocol !== "https:" &&
+      parsed.protocol !== "http:"
+    ) {
+      return "";
+    }
+
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+// =========================================================
+// MAIN ADMIN PAGE
+// =========================================================
+
 export default function AdminPage() {
   const [step, setStep] = useState<Step>("website");
   const [website, setWebsite] = useState("");
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
   const [admin, setAdmin] = useState<AdminUser | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
+
+  const [sessionChecking, setSessionChecking] = useState(true);
 
   const [dashboard, setDashboard] =
     useState<DashboardData | null>(null);
@@ -194,71 +282,77 @@ export default function AdminPage() {
   const [configurationSuccess, setConfigurationSuccess] =
     useState("");
 
-  useEffect(() => {
-    const savedWebsite = localStorage.getItem(
-      "jalali_admin_website"
-    );
+  // -------------------------------------------------------
+  // RESTORE WEBSITE AND ADMIN SESSION
+  // -------------------------------------------------------
 
-    if (savedWebsite) {
-      setWebsite(savedWebsite);
-      setStep("login");
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      try {
+        const savedWebsite = localStorage.getItem(
+          WEBSITE_STORAGE_KEY
+        );
+
+        if (savedWebsite && active) {
+          setWebsite(savedWebsite);
+          setStep("login");
+        }
+
+        if (!API_BASE) {
+          return;
+        }
+
+        const response = await fetch(
+          `${API_BASE}${AUTH_PATH}/me/`,
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+              Accept: "application/json",
+            },
+          }
+        );
+
+        const data = await response.json().catch(() => null);
+
+        if (
+          active &&
+          response.ok &&
+          data?.success &&
+          data?.user
+        ) {
+          setAdmin(data.user as AdminUser);
+          setSuccessMessage(
+            "نشست مدیریتی قبلی بازیابی شد."
+          );
+
+          await Promise.all([
+            loadDashboardInternal(active),
+            loadConfigurationInternal(active),
+          ]);
+        }
+      } catch {
+        // نبود نشست فعال به معنی خطای غیرعادی نیست.
+      } finally {
+        if (active) {
+          setSessionChecking(false);
+        }
+      }
     }
+
+    restoreSession();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
-  function normalizeWebsite(value: string) {
-    let result = value.trim();
-
-    if (!result) return "";
-
-    if (!/^https?:\/\//i.test(result)) {
-      result = "https://" + result;
-    }
-
-    try {
-      const parsed = new URL(result);
-
-      if (
-        parsed.protocol !== "https:" &&
-        parsed.protocol !== "http:"
-      ) {
-        return "";
-      }
-
-      return parsed.origin;
-    } catch {
-      return "";
-    }
-  }
-
-  function submitWebsite(
-    event: React.FormEvent<HTMLFormElement>
-  ) {
-    event.preventDefault();
-
-    const normalized = normalizeWebsite(website);
-
-    if (!normalized) {
-      setError("آدرس سایت معتبر نیست.");
-      return;
-    }
-
-    setError("");
-    setWebsite(normalized);
-
-    localStorage.setItem(
-      "jalali_admin_website",
-      normalized
-    );
-
-    setStep("login");
-  }
-
-  function changeWebsite() {
-    setStep("website");
-    setPassword("");
-    setError("");
-    setSuccessMessage("");
-  }
+  // -------------------------------------------------------
+  // CSRF
+  // -------------------------------------------------------
 
   async function getCsrfToken() {
     if (!API_BASE) {
@@ -279,7 +373,10 @@ export default function AdminPage() {
       }
     );
 
-    const data = await readResponse(response);
+    const data = await readResponse<{
+      success: boolean;
+      csrfToken?: string;
+    }>(response);
 
     if (!data.csrfToken) {
       throw new Error(
@@ -287,12 +384,22 @@ export default function AdminPage() {
       );
     }
 
-    return data.csrfToken as string;
+    return data.csrfToken;
   }
 
-  async function loadDashboard() {
-    setDashboardLoading(true);
-    setDashboardError("");
+  // -------------------------------------------------------
+  // DASHBOARD
+  // -------------------------------------------------------
+
+  async function loadDashboardInternal(
+    active = true
+  ) {
+    if (!API_BASE) return;
+
+    if (active) {
+      setDashboardLoading(true);
+      setDashboardError("");
+    }
 
     try {
       const response = await fetch(
@@ -307,25 +414,47 @@ export default function AdminPage() {
         }
       );
 
-      const data = await readResponse(response);
-
-      setDashboard(data);
-    } catch (err) {
-      setDashboard(null);
-
-      setDashboardError(
-        err instanceof Error
-          ? err.message
-          : "دریافت اطلاعات داشبورد ناموفق بود."
+      const data = await readResponse<DashboardData>(
+        response
       );
+
+      if (active) {
+        setDashboard(data);
+      }
+    } catch (err) {
+      if (active) {
+        setDashboard(null);
+
+        setDashboardError(
+          err instanceof Error
+            ? err.message
+            : "دریافت اطلاعات داشبورد ناموفق بود."
+        );
+      }
     } finally {
-      setDashboardLoading(false);
+      if (active) {
+        setDashboardLoading(false);
+      }
     }
   }
 
-  async function loadConfiguration() {
-    setConfigurationLoading(true);
-    setConfigurationError("");
+  async function loadDashboard() {
+    await loadDashboardInternal(true);
+  }
+
+  // -------------------------------------------------------
+  // STORE CONFIGURATION
+  // -------------------------------------------------------
+
+  async function loadConfigurationInternal(
+    active = true
+  ) {
+    if (!API_BASE) return;
+
+    if (active) {
+      setConfigurationLoading(true);
+      setConfigurationError("");
+    }
 
     try {
       const response = await fetch(
@@ -340,23 +469,40 @@ export default function AdminPage() {
         }
       );
 
-      const data = await readResponse(response);
+      const data = await readResponse<{
+        success: boolean;
+        data?: StoreConfiguration;
+      }>(response);
 
-      setConfiguration({
-        seller_phone: data.data?.seller_phone || "",
-        seller_telegram: data.data?.seller_telegram || "",
-        store_name: data.data?.store_name || "",
-        slogan: data.data?.slogan || "",
-      });
+      if (active) {
+        setConfiguration({
+          seller_phone:
+            data.data?.seller_phone || "",
+          seller_telegram:
+            data.data?.seller_telegram || "",
+          store_name:
+            data.data?.store_name || "",
+          slogan:
+            data.data?.slogan || "",
+        });
+      }
     } catch (err) {
-      setConfigurationError(
-        err instanceof Error
-          ? err.message
-          : "دریافت تنظیمات فروشگاه ناموفق بود."
-      );
+      if (active) {
+        setConfigurationError(
+          err instanceof Error
+            ? err.message
+            : "دریافت تنظیمات فروشگاه ناموفق بود."
+        );
+      }
     } finally {
-      setConfigurationLoading(false);
+      if (active) {
+        setConfigurationLoading(false);
+      }
     }
+  }
+
+  async function loadConfiguration() {
+    await loadConfigurationInternal(true);
   }
 
   async function loadAdminPanel() {
@@ -368,8 +514,46 @@ export default function AdminPage() {
     ]);
   }
 
+  // -------------------------------------------------------
+  // WEBSITE FORM
+  // -------------------------------------------------------
+
+  function submitWebsite(
+    event: FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
+    const normalized = normalizeWebsite(website);
+
+    if (!normalized) {
+      setError("آدرس سایت معتبر نیست.");
+      return;
+    }
+
+    setError("");
+    setWebsite(normalized);
+
+    localStorage.setItem(
+      WEBSITE_STORAGE_KEY,
+      normalized
+    );
+
+    setStep("login");
+  }
+
+  function changeWebsite() {
+    setStep("website");
+    setPassword("");
+    setError("");
+    setSuccessMessage("");
+  }
+
+  // -------------------------------------------------------
+  // ADMIN LOGIN
+  // -------------------------------------------------------
+
   async function submitLogin(
-    event: React.FormEvent<HTMLFormElement>
+    event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
@@ -384,7 +568,9 @@ export default function AdminPage() {
     }
 
     if (!username.trim() || !password) {
-      setError("نام کاربری و رمز عبور را وارد کن.");
+      setError(
+        "نام کاربری و رمز عبور را وارد کن."
+      );
       return;
     }
 
@@ -411,7 +597,17 @@ export default function AdminPage() {
         }
       );
 
-      const loginData = await readResponse(loginResponse);
+      const loginData = await readResponse<{
+        success: boolean;
+        user: AdminUser;
+        message?: string;
+      }>(loginResponse);
+
+      if (!loginData.user) {
+        throw new Error(
+          "اطلاعات حساب مدیر از سرور دریافت نشد."
+        );
+      }
 
       setAdmin(loginData.user);
       setPassword("");
@@ -432,8 +628,12 @@ export default function AdminPage() {
     }
   }
 
+  // -------------------------------------------------------
+  // SAVE SELLER CONFIGURATION
+  // -------------------------------------------------------
+
   async function saveConfiguration(
-    event: React.FormEvent<HTMLFormElement>
+    event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
@@ -441,11 +641,19 @@ export default function AdminPage() {
     setConfigurationSuccess("");
 
     const phone = configuration.seller_phone.trim();
-    const telegram = configuration.seller_telegram.trim();
+    const telegram =
+      configuration.seller_telegram.trim();
 
     if (!phone || !telegram) {
       setConfigurationError(
         "شماره تماس و آیدی تلگرام فروشنده الزامی هستند."
+      );
+      return;
+    }
+
+    if (!API_BASE) {
+      setConfigurationError(
+        "آدرس API بک‌اند تنظیم نشده است."
       );
       return;
     }
@@ -473,18 +681,23 @@ export default function AdminPage() {
         }
       );
 
-      const data = await readResponse(response);
+      const data = await readResponse<{
+        success: boolean;
+        message?: string;
+        data?: StoreConfiguration;
+      }>(response);
 
-      setConfiguration({
-        ...configuration,
+      setConfiguration((previous) => ({
+        ...previous,
         seller_phone:
           data.data?.seller_phone || phone,
         seller_telegram:
           data.data?.seller_telegram || telegram,
-      });
+      }));
 
       setConfigurationSuccess(
-        data.message || "اطلاعات فروشنده ذخیره شد."
+        data.message ||
+          "اطلاعات فروشنده ذخیره شد."
       );
     } catch (err) {
       setConfigurationError(
@@ -496,6 +709,10 @@ export default function AdminPage() {
       setConfigurationSaving(false);
     }
   }
+
+  // -------------------------------------------------------
+  // LOGOUT
+  // -------------------------------------------------------
 
   async function logoutAdmin() {
     if (!API_BASE) return;
@@ -511,8 +728,10 @@ export default function AdminPage() {
         {
           method: "POST",
           credentials: "include",
+          cache: "no-store",
           headers: {
             "Content-Type": "application/json",
+            Accept: "application/json",
             "X-CSRFToken": csrfToken,
           },
           body: JSON.stringify({}),
@@ -524,10 +743,13 @@ export default function AdminPage() {
       setAdmin(null);
       setDashboard(null);
       setDashboardError("");
+
       setConfigurationError("");
       setConfigurationSuccess("");
+
       setSuccessMessage("");
       setError("");
+      setPassword("");
       setStep("login");
     } catch (err) {
       setError(
@@ -540,10 +762,49 @@ export default function AdminPage() {
     }
   }
 
+  // -------------------------------------------------------
+  // DERIVED DATA
+  // -------------------------------------------------------
+
   const overview = dashboard?.overview;
   const products = dashboard?.products;
   const orders = dashboard?.orders;
   const wholesale = dashboard?.wholesale;
+  const payments = dashboard?.payments;
+
+  // -------------------------------------------------------
+  // LOADING SCREEN
+  // -------------------------------------------------------
+
+  if (sessionChecking) {
+    return (
+      <main
+        dir="rtl"
+        className="flex min-h-screen items-center justify-center bg-[#080808] text-white"
+      >
+        <div className="flex flex-col items-center gap-4">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-[#bd9568]/30 bg-[#bd9568]/10">
+            <LoaderCircle
+              size={30}
+              className="animate-spin text-[#e4bd8c]"
+            />
+          </div>
+
+          <p className="text-sm text-white/55">
+            در حال بررسی نشست مدیریتی...
+          </p>
+
+          <span className="text-xs tracking-[4px] text-[#e4bd8c]">
+            JALALI
+          </span>
+        </div>
+      </main>
+    );
+  }
+
+  // =======================================================
+  // PAGE
+  // =======================================================
 
   return (
     <main
@@ -551,9 +812,13 @@ export default function AdminPage() {
       className="relative min-h-screen overflow-hidden bg-[#080808] px-4 py-8 text-white sm:px-6"
     >
       <div className="pointer-events-none fixed -right-32 -top-32 h-96 w-96 rounded-full bg-[#bd9568]/10 blur-[110px]" />
+
       <div className="pointer-events-none fixed -bottom-32 -left-32 h-96 w-96 rounded-full bg-[#bd9568]/10 blur-[110px]" />
 
       <div className="relative mx-auto w-full max-w-6xl">
+
+        {/* HEADER */}
+
         <header className="mb-8 flex flex-col items-center justify-between gap-5 sm:flex-row">
           <div className="flex items-center gap-4">
             <div className="flex h-16 w-16 items-center justify-center rounded-[22px] border border-[#e4bd8c]/30 bg-gradient-to-br from-[#f0d1a0] via-[#b98750] to-[#684326] shadow-xl shadow-[#bd9568]/20">
@@ -566,6 +831,7 @@ export default function AdminPage() {
               <h1 className="text-3xl font-black tracking-[5px] text-[#e4bd8c]">
                 JALALI
               </h1>
+
               <p className="mt-2 text-xs text-white/45">
                 مرکز مدیریت هوشمند فروشگاه
               </p>
@@ -578,6 +844,7 @@ export default function AdminPage() {
                 <span className="text-white/40">
                   مدیر فعال:
                 </span>
+
                 <span className="mr-2 font-bold text-[#e4bd8c]">
                   {admin.username}
                 </span>
@@ -586,17 +853,22 @@ export default function AdminPage() {
               <button
                 type="button"
                 onClick={loadAdminPanel}
-                disabled={dashboardLoading || configurationLoading}
+                disabled={
+                  dashboardLoading ||
+                  configurationLoading
+                }
                 className="flex items-center gap-2 rounded-xl border border-[#bd9568]/30 px-4 py-3 text-xs text-[#e4bd8c] transition hover:bg-[#bd9568]/10 disabled:opacity-50"
               >
                 <RefreshCw
                   size={15}
                   className={
-                    dashboardLoading || configurationLoading
+                    dashboardLoading ||
+                    configurationLoading
                       ? "animate-spin"
                       : ""
                   }
                 />
+
                 بروزرسانی اطلاعات
               </button>
 
@@ -613,8 +885,11 @@ export default function AdminPage() {
           )}
         </header>
 
+        {/* LOGIN AREA */}
+
         {!admin ? (
           <section className="mx-auto max-w-lg rounded-[30px] border border-[#bd9568]/25 bg-[#141311]/95 p-6 shadow-2xl shadow-black/50 sm:p-8">
+
             {step === "website" ? (
               <>
                 <div className="mb-7 flex items-center gap-4">
@@ -626,6 +901,7 @@ export default function AdminPage() {
                     <h2 className="text-lg font-bold">
                       اتصال فروشگاه
                     </h2>
+
                     <p className="mt-1 text-xs text-white/45">
                       آدرس سایت مورد مدیریت را وارد کن
                     </p>
@@ -665,9 +941,7 @@ export default function AdminPage() {
                   </div>
 
                   {error && (
-                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs leading-6 text-red-300">
-                      {error}
-                    </div>
+                    <ErrorMessage message={error} />
                   )}
 
                   <button
@@ -688,6 +962,8 @@ export default function AdminPage() {
                   <p className="text-[11px] leading-6 text-white/45">
                     آدرس API بک‌اند باید جداگانه در متغیر
                     NEXT_PUBLIC_API_BASE_URL تنظیم شده باشد.
+                    آدرس واردشده در این مرحله برای شناسایی
+                    سایت مورد مدیریت نگهداری می‌شود.
                   </p>
                 </div>
               </>
@@ -699,10 +975,12 @@ export default function AdminPage() {
                       size={25}
                       className="text-[#e4bd8c]"
                     />
+
                     <div>
                       <h2 className="font-bold">
                         ورود مدیر
                       </h2>
+
                       <p className="mt-1 text-xs text-white/45">
                         ورود امن به مرکز مدیریت JALALI
                       </p>
@@ -724,10 +1002,12 @@ export default function AdminPage() {
                     size={19}
                     className="shrink-0 text-[#e4bd8c]"
                   />
+
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] text-white/40">
                       سایت انتخاب‌شده
                     </p>
+
                     <p
                       dir="ltr"
                       className="truncate text-left text-xs text-[#e4bd8c]"
@@ -735,6 +1015,7 @@ export default function AdminPage() {
                       {website}
                     </p>
                   </div>
+
                   <a
                     href={website}
                     target="_blank"
@@ -760,6 +1041,7 @@ export default function AdminPage() {
                         size={19}
                         className="text-[#c49a6c]"
                       />
+
                       <input
                         value={username}
                         onChange={(event) =>
@@ -783,17 +1065,23 @@ export default function AdminPage() {
                         size={19}
                         className="text-[#c49a6c]"
                       />
+
                       <input
                         value={password}
                         onChange={(event) =>
                           setPassword(event.target.value)
                         }
-                        type={showPassword ? "text" : "password"}
+                        type={
+                          showPassword
+                            ? "text"
+                            : "password"
+                        }
                         placeholder="رمز عبور مدیر"
                         autoComplete="current-password"
                         className="w-full bg-transparent py-4 text-sm outline-none"
                         required
                       />
+
                       <button
                         type="button"
                         onClick={() =>
@@ -812,9 +1100,7 @@ export default function AdminPage() {
                   </div>
 
                   {error && (
-                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs leading-6 text-red-300">
-                      {error}
-                    </div>
+                    <ErrorMessage message={error} />
                   )}
 
                   <button
@@ -830,6 +1116,7 @@ export default function AdminPage() {
                     ) : (
                       <ArrowLeft size={19} />
                     )}
+
                     {loading
                       ? "در حال بررسی..."
                       : "ورود به پنل مدیریت"}
@@ -841,6 +1128,7 @@ export default function AdminPage() {
                     <LockKeyhole size={15} />
                     امنیت حساب مدیر
                   </div>
+
                   <p className="text-[11px] leading-6 text-white/50">
                     نشست مدیریتی با کوکی سرور نگهداری می‌شود
                     و رمز عبور در مرورگر ذخیره نمی‌شود.
@@ -850,30 +1138,50 @@ export default function AdminPage() {
             )}
           </section>
         ) : (
+
+          // =================================================
+          // AUTHENTICATED ADMIN PANEL
+          // =================================================
+
           <div className="space-y-7">
+
+            {/* DASHBOARD */}
+
             <section className="rounded-[26px] border border-[#bd9568]/25 bg-[#141311]/95 p-5 sm:p-7">
               <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                 <div>
                   <div className="flex items-center gap-2 text-emerald-300">
                     <CheckCircle2 size={20} />
+
                     <span className="text-sm font-bold">
                       ورود مدیر تأیید شده
                     </span>
                   </div>
+
                   <h2 className="mt-3 text-xl font-black text-[#e4bd8c]">
                     داشبورد مدیریت JALALI
                   </h2>
+
                   <p className="mt-2 text-xs text-white/45">
                     {admin.isSuperuser
                       ? "دسترسی مدیر ارشد"
                       : "دسترسی مدیر فروشگاه"}
+
                     {" · "}
+
                     {dashboard?.dashboard?.generated_at
                       ? `آخرین بروزرسانی: ${formatDate(
                           dashboard.dashboard.generated_at
                         )}`
                       : "اطلاعات داشبورد هنوز دریافت نشده است."}
                   </p>
+
+                  {dashboard?.dashboard?.timezone && (
+                    <p className="mt-1 text-[10px] text-white/30">
+                      منطقه زمانی سرور:{" "}
+                      {dashboard.dashboard.timezone}
+                    </p>
+                  )}
                 </div>
 
                 <button
@@ -885,9 +1193,12 @@ export default function AdminPage() {
                   <RefreshCw
                     size={15}
                     className={
-                      dashboardLoading ? "animate-spin" : ""
+                      dashboardLoading
+                        ? "animate-spin"
+                        : ""
                     }
                   />
+
                   بروزرسانی داشبورد
                 </button>
               </div>
@@ -898,13 +1209,16 @@ export default function AdminPage() {
                     size={18}
                     className="mt-0.5 shrink-0"
                   />
+
                   <div>
                     <p className="font-bold">
                       دریافت داشبورد ناموفق بود
                     </p>
+
                     <p>{dashboardError}</p>
+
                     <p className="mt-1 text-red-200/70">
-                      مسیر API و مجوز مدیر را بررسی کن.
+                      مسیر API، نشست مدیر و مجوز دسترسی را بررسی کن.
                     </p>
                   </div>
                 </div>
@@ -916,12 +1230,15 @@ export default function AdminPage() {
                     className="animate-spin text-[#e4bd8c]"
                     size={22}
                   />
+
                   در حال دریافت آمار واقعی فروشگاه...
                 </div>
               )}
 
               {dashboard && (
                 <>
+                  {/* OVERVIEW CARDS */}
+
                   <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                     <StatCard
                       icon={<Package size={21} />}
@@ -968,43 +1285,145 @@ export default function AdminPage() {
                     />
                   </div>
 
+                  {/* REVENUE PERIODS */}
+
+                  <div className="mt-6 rounded-2xl border border-[#bd9568]/15 bg-black/20 p-5">
+                    <div className="mb-4 flex items-center gap-2 text-[#e4bd8c]">
+                      <TrendingUp size={19} />
+
+                      <h3 className="font-bold">
+                        گزارش درآمد
+                      </h3>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <MiniStat
+                        label="درآمد امروز"
+                        value={formatMoney(
+                          overview?.today_revenue
+                        )}
+                      />
+
+                      <MiniStat
+                        label="درآمد ماه جاری"
+                        value={formatMoney(
+                          overview?.monthly_revenue
+                        )}
+                      />
+
+                      <MiniStat
+                        label="درآمد ۳۰ روز اخیر"
+                        value={formatMoney(
+                          overview?.last_thirty_days_revenue
+                        )}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ACTIVITY PERIODS */}
+
+                  <div className="mt-6 rounded-2xl border border-[#bd9568]/15 bg-black/20 p-5">
+                    <h3 className="mb-4 font-bold text-[#e4bd8c]">
+                      روند فعالیت فروشگاه
+                    </h3>
+
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                      <MiniStat
+                        label="سفارش‌های امروز"
+                        value={formatNumber(
+                          overview?.today_orders
+                        )}
+                      />
+
+                      <MiniStat
+                        label="سفارش‌های ۷ روز اخیر"
+                        value={formatNumber(
+                          overview?.last_seven_days_orders
+                        )}
+                      />
+
+                      <MiniStat
+                        label="سفارش‌های ۳۰ روز اخیر"
+                        value={formatNumber(
+                          overview?.last_thirty_days_orders
+                        )}
+                      />
+
+                      <MiniStat
+                        label="کل سفارش‌ها"
+                        value={formatNumber(
+                          overview?.total_orders
+                        )}
+                      />
+                    </div>
+                  </div>
+
+                  {/* STATUS PANELS */}
+
                   <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
                     <InfoPanel title="وضعیت محصولات">
+                      <InfoLine
+                        label="کل محصولات"
+                        value={products?.total}
+                      />
+
+                      <InfoLine
+                        label="فعال"
+                        value={products?.active}
+                      />
+
+                      <InfoLine
+                        label="غیرفعال"
+                        value={products?.inactive}
+                      />
+
                       <InfoLine
                         label="موجود در انبار"
                         value={products?.in_stock}
                       />
+
                       <InfoLine
                         label="ناموجود"
                         value={products?.out_of_stock}
                       />
+
                       <InfoLine
                         label="موجودی کم"
                         value={products?.low_stock}
-                      />
-                      <InfoLine
-                        label="غیرفعال"
-                        value={products?.inactive}
                       />
                     </InfoPanel>
 
                     <InfoPanel title="وضعیت سفارش‌ها">
                       <InfoLine
+                        label="کل سفارش‌ها"
+                        value={orders?.total}
+                      />
+
+                      <InfoLine
+                        label="امروز"
+                        value={orders?.today}
+                      />
+
+                      <InfoLine
                         label="در انتظار"
                         value={orders?.pending}
                       />
+
                       <InfoLine
                         label="در حال پردازش"
                         value={orders?.processing}
                       />
+
                       <InfoLine
                         label="ارسال‌شده"
                         value={orders?.shipped}
                       />
+
                       <InfoLine
                         label="تحویل‌شده"
                         value={orders?.delivered}
                       />
+
                       <InfoLine
                         label="لغوشده"
                         value={orders?.cancelled}
@@ -1016,14 +1435,17 @@ export default function AdminPage() {
                         label="کل درخواست‌ها"
                         value={wholesale?.total}
                       />
+
                       <InfoLine
                         label="در انتظار بررسی"
                         value={wholesale?.pending}
                       />
+
                       <InfoLine
                         label="تأییدشده"
                         value={wholesale?.approved}
                       />
+
                       <InfoLine
                         label="ردشده"
                         value={wholesale?.rejected}
@@ -1031,9 +1453,12 @@ export default function AdminPage() {
                     </InfoPanel>
                   </div>
 
+                  {/* PAYMENTS */}
+
                   <div className="mt-6 rounded-2xl border border-[#bd9568]/15 bg-black/20 p-5">
                     <div className="mb-4 flex items-center gap-2 text-[#e4bd8c]">
                       <TrendingUp size={19} />
+
                       <h3 className="font-bold">
                         وضعیت پرداخت‌ها
                       </h3>
@@ -1042,29 +1467,45 @@ export default function AdminPage() {
                     <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
                       <MiniStat
                         label="پرداخت‌شده"
-                        value={dashboard.payments?.paid_orders}
+                        value={formatNumber(
+                          payments?.paid_orders
+                        )}
                       />
+
                       <MiniStat
                         label="پرداخت‌نشده"
-                        value={dashboard.payments?.unpaid_orders}
+                        value={formatNumber(
+                          payments?.unpaid_orders
+                        )}
                       />
+
                       <MiniStat
                         label="در انتظار پرداخت"
-                        value={dashboard.payments?.pending_orders}
+                        value={formatNumber(
+                          payments?.pending_orders
+                        )}
                       />
+
                       <MiniStat
                         label="ناموفق"
-                        value={dashboard.payments?.failed_orders}
+                        value={formatNumber(
+                          payments?.failed_orders
+                        )}
                       />
+
                       <MiniStat
                         label="مرجوع‌شده"
-                        value={dashboard.payments?.refunded_orders}
+                        value={formatNumber(
+                          payments?.refunded_orders
+                        )}
                       />
                     </div>
                   </div>
                 </>
               )}
             </section>
+
+            {/* SELLER CONFIGURATION */}
 
             <section className="rounded-[26px] border border-[#bd9568]/25 bg-[#141311]/95 p-5 sm:p-7">
               <div className="mb-6 flex items-center gap-3">
@@ -1076,6 +1517,7 @@ export default function AdminPage() {
                   <h2 className="text-lg font-bold text-[#e4bd8c]">
                     اطلاعات فروشنده
                   </h2>
+
                   <p className="mt-1 text-xs text-white/45">
                     اطلاعات تماس عمومی فروشگاه
                   </p>
@@ -1088,6 +1530,7 @@ export default function AdminPage() {
                     className="animate-spin"
                     size={20}
                   />
+
                   در حال دریافت تنظیمات فروشگاه...
                 </div>
               ) : (
@@ -1102,6 +1545,7 @@ export default function AdminPage() {
                           size={16}
                           className="text-[#e4bd8c]"
                         />
+
                         شماره تماس فروشنده
                       </label>
 
@@ -1110,12 +1554,14 @@ export default function AdminPage() {
                         onChange={(event) =>
                           setConfiguration({
                             ...configuration,
-                            seller_phone: event.target.value,
+                            seller_phone:
+                              event.target.value,
                           })
                         }
                         type="tel"
                         dir="ltr"
                         placeholder="09194516434"
+                        autoComplete="tel"
                         className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-4 text-left text-sm outline-none transition focus:border-[#bd9568]"
                         required
                       />
@@ -1127,6 +1573,7 @@ export default function AdminPage() {
                           size={16}
                           className="text-[#e4bd8c]"
                         />
+
                         آیدی تلگرام فروشنده
                       </label>
 
@@ -1135,7 +1582,8 @@ export default function AdminPage() {
                         onChange={(event) =>
                           setConfiguration({
                             ...configuration,
-                            seller_telegram: event.target.value,
+                            seller_telegram:
+                              event.target.value,
                           })
                         }
                         type="text"
@@ -1148,15 +1596,15 @@ export default function AdminPage() {
                   </div>
 
                   {configurationError && (
-                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs leading-6 text-red-300">
-                      {configurationError}
-                    </div>
+                    <ErrorMessage
+                      message={configurationError}
+                    />
                   )}
 
                   {configurationSuccess && (
-                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs leading-6 text-emerald-300">
-                      {configurationSuccess}
-                    </div>
+                    <SuccessMessage
+                      message={configurationSuccess}
+                    />
                   )}
 
                   <button
@@ -1172,6 +1620,7 @@ export default function AdminPage() {
                     ) : (
                       <Save size={19} />
                     )}
+
                     {configurationSaving
                       ? "در حال ذخیره..."
                       : "ذخیره اطلاعات فروشنده"}
@@ -1180,10 +1629,18 @@ export default function AdminPage() {
               )}
             </section>
 
+            {/* RECENT ORDERS */}
+
             <section className="rounded-[26px] border border-[#bd9568]/25 bg-[#141311]/95 p-5 sm:p-7">
-              <h2 className="mb-5 text-lg font-bold text-[#e4bd8c]">
-                آخرین سفارش‌ها
-              </h2>
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <h2 className="text-lg font-bold text-[#e4bd8c]">
+                  آخرین سفارش‌ها
+                </h2>
+
+                <span className="text-[10px] text-white/35">
+                  حداکثر ۱۰ سفارش اخیر
+                </span>
+              </div>
 
               {!dashboard ? (
                 <p className="text-sm text-white/40">
@@ -1194,12 +1651,13 @@ export default function AdminPage() {
                   {dashboard.recent_orders.map((order) => (
                     <div
                       key={order.id}
-                      className="grid grid-cols-1 gap-3 rounded-xl border border-white/10 bg-black/25 p-4 sm:grid-cols-4 sm:items-center"
+                      className="grid grid-cols-1 gap-3 rounded-xl border border-white/10 bg-black/25 p-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-center"
                     >
                       <div>
                         <p className="text-xs text-white/40">
                           شماره سفارش
                         </p>
+
                         <p className="mt-1 font-bold text-[#e4bd8c]">
                           {order.order_number}
                         </p>
@@ -1209,30 +1667,51 @@ export default function AdminPage() {
                         <p className="text-xs text-white/40">
                           مشتری
                         </p>
+
                         <p className="mt-1 text-sm">
                           {order.customer_name}
                         </p>
+
+                        <p className="mt-1 text-[10px] text-white/35">
+                          نوع مشتری:{" "}
+                          {order.customer_type || "—"}
+                        </p>
                       </div>
 
                       <div>
                         <p className="text-xs text-white/40">
-                          وضعیت
+                          وضعیت سفارش
                         </p>
+
                         <p className="mt-1 text-sm">
-                          {order.status_label}
-                          {" · "}
-                          {order.payment_status_label}
+                          {order.status_label || order.status || "—"}
                         </p>
                       </div>
 
                       <div>
                         <p className="text-xs text-white/40">
-                          مبلغ
+                          وضعیت پرداخت
                         </p>
+
+                        <p className="mt-1 text-sm">
+                          {order.payment_status_label ||
+                            order.payment_status ||
+                            "—"}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p className="text-xs text-white/40">
+                          مبلغ و تاریخ
+                        </p>
+
                         <p className="mt-1 text-sm font-bold">
-                          {formatNumber(order.total_amount)}
-                          {" "}
-                          {order.currency}
+                          {formatNumber(order.total_amount)}{" "}
+                          {order.currency || "تومان"}
+                        </p>
+
+                        <p className="mt-1 text-[10px] text-white/35">
+                          {formatDate(order.created_at)}
                         </p>
                       </div>
                     </div>
@@ -1245,10 +1724,18 @@ export default function AdminPage() {
               )}
             </section>
 
+            {/* LOW STOCK PRODUCTS */}
+
             <section className="rounded-[26px] border border-[#bd9568]/25 bg-[#141311]/95 p-5 sm:p-7">
-              <h2 className="mb-5 text-lg font-bold text-[#e4bd8c]">
-                محصولات با موجودی کم
-              </h2>
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <h2 className="text-lg font-bold text-[#e4bd8c]">
+                  محصولات با موجودی کم
+                </h2>
+
+                <span className="text-[10px] text-white/35">
+                  بررسی موجودی انبار
+                </span>
+              </div>
 
               {!dashboard ? (
                 <p className="text-sm text-white/40">
@@ -1256,31 +1743,43 @@ export default function AdminPage() {
                 </p>
               ) : dashboard.low_stock_products?.length ? (
                 <div className="space-y-3">
-                  {dashboard.low_stock_products.map((product) => (
-                    <div
-                      key={product.id}
-                      className="flex flex-col justify-between gap-3 rounded-xl border border-amber-500/15 bg-amber-500/[0.04] p-4 sm:flex-row sm:items-center"
-                    >
-                      <div>
-                        <p className="font-bold">
-                          {product.name}
-                        </p>
-                        <p className="mt-1 text-xs text-white/40">
-                          کد محصول: {product.sku || "—"}
-                        </p>
-                      </div>
+                  {dashboard.low_stock_products.map(
+                    (product) => (
+                      <div
+                        key={product.id}
+                        className="flex flex-col justify-between gap-3 rounded-xl border border-amber-500/15 bg-amber-500/[0.04] p-4 sm:flex-row sm:items-center"
+                      >
+                        <div>
+                          <p className="font-bold">
+                            {product.name}
+                          </p>
 
-                      <div className="flex items-center gap-4">
-                        <span className="text-xs text-amber-300">
-                          موجودی:{" "}
-                          {formatNumber(product.stock_quantity)}
-                        </span>
-                        <span className="text-xs text-white/60">
-                          {formatMoney(product.public_price)}
-                        </span>
+                          <p className="mt-1 text-xs text-white/40">
+                            کد محصول: {product.sku || "—"}
+                          </p>
+
+                          <p className="mt-1 text-[10px] text-white/30">
+                            وضعیت: {product.availability || "—"}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4">
+                          <span className="text-xs text-amber-300">
+                            موجودی:{" "}
+                            {formatNumber(
+                              product.stock_quantity
+                            )}
+                          </span>
+
+                          <span className="text-xs text-white/60">
+                            {formatMoney(
+                              product.public_price
+                            )}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-white/40">
@@ -1290,9 +1789,13 @@ export default function AdminPage() {
             </section>
 
             {error && (
-              <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">
-                {error}
-              </div>
+              <ErrorMessage message={error} />
+            )}
+
+            {successMessage && (
+              <SuccessMessage
+                message={successMessage}
+              />
             )}
           </div>
         )}
@@ -1305,6 +1808,47 @@ export default function AdminPage() {
   );
 }
 
+// =========================================================
+// REUSABLE UI COMPONENTS
+// =========================================================
+
+function ErrorMessage({
+  message,
+}: {
+  message: string;
+}) {
+  return (
+    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs leading-6 text-red-300">
+      <div className="flex items-start gap-2">
+        <AlertTriangle
+          size={16}
+          className="mt-1 shrink-0"
+        />
+
+        <span>{message}</span>
+      </div>
+    </div>
+  );
+}
+
+function SuccessMessage({
+  message,
+}: {
+  message: string;
+}) {
+  return (
+    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs leading-6 text-emerald-300">
+      <div className="flex items-start gap-2">
+        <CheckCircle2
+          size={16}
+          className="mt-1 shrink-0"
+        />
+
+        <span>{message}</span>
+      </div>
+    </div>
+  );
+}
 
 function StatCard({
   icon,
@@ -1312,7 +1856,7 @@ function StatCard({
   value,
   detail,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   value: string;
   detail: string;
@@ -1323,6 +1867,7 @@ function StatCard({
         <span className="text-xs text-white/45">
           {title}
         </span>
+
         <span className="text-[#e4bd8c]">
           {icon}
         </span>
@@ -1339,26 +1884,25 @@ function StatCard({
   );
 }
 
-
 function InfoPanel({
   title,
   children,
 }: {
   title: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div className="rounded-2xl border border-[#bd9568]/15 bg-black/20 p-5">
       <h3 className="mb-4 font-bold text-[#e4bd8c]">
         {title}
       </h3>
+
       <div className="space-y-3">
         {children}
       </div>
     </div>
   );
 }
-
 
 function InfoLine({
   label,
@@ -1372,6 +1916,7 @@ function InfoLine({
       <span className="text-white/50">
         {label}
       </span>
+
       <span className="font-bold text-white">
         {formatNumber(value)}
       </span>
@@ -1379,21 +1924,21 @@ function InfoLine({
   );
 }
 
-
 function MiniStat({
   label,
   value,
 }: {
   label: string;
-  value?: number;
+  value: string;
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-black/25 p-3">
       <p className="text-[10px] leading-5 text-white/40">
         {label}
       </p>
-      <p className="mt-2 text-lg font-black text-[#e4bd8c]">
-        {formatNumber(value)}
+
+      <p className="mt-2 break-words text-lg font-black text-[#e4bd8c]">
+        {value}
       </p>
     </div>
   );
