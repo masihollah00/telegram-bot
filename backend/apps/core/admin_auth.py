@@ -1,18 +1,17 @@
-
 import json
-import re
+import os
+import hmac
+import logging
 
-from django.contrib.auth import login, logout
+from django.contrib.auth import login, logout, get_user_model
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
-from django.contrib.auth import get_user_model
 
-from .models import StoreConfiguration
-
+logger = logging.getLogger(__name__)
 
 LOGIN_LIMIT = 5
 LOGIN_WINDOW = 60 * 60
@@ -29,26 +28,23 @@ def get_client_ip(request):
     return request.META.get("REMOTE_ADDR", "unknown")
 
 
-def normalize_phone(value):
-    value = str(value or "").strip()
+def get_login_cache_key(request):
+    return f"jalali_owner_login:{get_client_ip(request)}"
 
-    persian = "۰۱۲۳۴۵۶۷۸۹"
-    arabic = "٠١٢٣٤٥٦٧٨٩"
 
-    for index, digit in enumerate(persian):
-        value = value.replace(digit, str(index))
+def get_owner_user():
+    User = get_user_model()
 
-    for index, digit in enumerate(arabic):
-        value = value.replace(digit, str(index))
+    owners = User.objects.filter(
+        is_active=True,
+        is_staff=True,
+        is_superuser=True,
+    ).order_by("pk")
 
-    value = re.sub(r"[\s\-()]", "", value)
+    if owners.count() != 1:
+        return None
 
-    if value.startswith("+98"):
-        value = "0" + value[3:]
-    elif value.startswith("0098"):
-        value = "0" + value[4:]
-
-    return value
+    return owners.first()
 
 
 @require_GET
@@ -64,42 +60,54 @@ def admin_csrf(request):
 @csrf_protect
 def admin_login(request):
     """
-    ورود مالک با شماره ثبت‌شده فروشنده.
-    شماره فقط در سرور بررسی می‌شود.
+    ورود اختصاصی مدیر اصلی JALALI.
+
+    رمز عبور فقط از متغیر محیطی سرور خوانده می‌شود.
+    رمز در کد فرانت‌اند یا مخزن GitHub قرار نمی‌گیرد.
     """
 
-    ip = get_client_ip(request)
-    cache_key = f"jalali_owner_login:{ip}"
-
+    cache_key = get_login_cache_key(request)
     attempts = cache.get(cache_key, 0)
 
     if attempts >= LOGIN_LIMIT:
         return json_error(
-            "تعداد تلاش‌ها بیش از حد مجاز است. بعداً دوباره تلاش کنید.",
+            "تعداد تلاش‌های ورود بیش از حد مجاز است. بعداً دوباره تلاش کنید.",
             429,
         )
 
     try:
         data = json.loads(request.body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return json_error("اطلاعات واردشده معتبر نیست.")
-
-    phone = normalize_phone(data.get("phone", ""))
-
-    if not re.fullmatch(r"09\d{9}", phone):
-        return json_error("شماره موبایل معتبر نیست.")
-
-    try:
-        configuration = StoreConfiguration.objects.get(pk=1)
-    except StoreConfiguration.DoesNotExist:
         return json_error(
-            "تنظیمات مالک فروشگاه هنوز ثبت نشده است.",
+            "اطلاعات ارسال‌شده معتبر نیست."
+        )
+
+    password = str(data.get("password", ""))
+
+    if not password or len(password) > 256:
+        return json_error(
+            "رمز عبور را به‌درستی وارد کنید."
+        )
+
+    expected_password = os.environ.get(
+        "JALALI_ADMIN_PASSWORD",
+        "",
+    )
+
+    if not expected_password:
+        logger.error(
+            "JALALI_ADMIN_PASSWORD is not configured."
+        )
+
+        return json_error(
+            "تنظیم امنیتی ورود مدیر هنوز در سرور انجام نشده است.",
             503,
         )
 
-    owner_phone = normalize_phone(configuration.seller_phone)
-
-    if not owner_phone or phone != owner_phone:
+    if not hmac.compare_digest(
+        password.encode("utf-8"),
+        expected_password.encode("utf-8"),
+    ):
         cache.set(
             cache_key,
             attempts + 1,
@@ -107,39 +115,35 @@ def admin_login(request):
         )
 
         return json_error(
-            "این شماره اجازه ورود به مدیریت را ندارد.",
+            "رمز عبور صحیح نیست.",
             401,
         )
 
-    User = get_user_model()
-
-    owner_users = User.objects.filter(
-        is_active=True,
-        is_staff=True,
-        is_superuser=True,
-    ).order_by("pk")
-
-    owner = owner_users.first()
+    owner = get_owner_user()
 
     if owner is None:
+        logger.error(
+            "Exactly one active Django superuser is required."
+        )
+
         return json_error(
-            "حساب مدیر اصلی هنوز در سامانه ایجاد نشده است.",
+            "حساب مدیر اصلی به‌درستی در سرور تنظیم نشده است.",
             503,
         )
 
-    if owner_users.count() > 1:
-        return json_error(
-            "بیش از یک حساب مدیر اصلی وجود دارد؛ ابتدا حساب مالک را مشخص کنید.",
-            503,
-        )
+    login(
+        request,
+        owner,
+        backend="django.contrib.auth.backends.ModelBackend",
+    )
 
-    login(request, owner)
+    request.session.cycle_key()
 
     cache.delete(cache_key)
 
     return JsonResponse({
         "success": True,
-        "message": "ورود به پنل مدیریت انجام شد.",
+        "message": "ورود مدیر اصلی تأیید شد.",
         "user": {
             "id": owner.pk,
             "username": owner.get_username(),
@@ -154,11 +158,22 @@ def admin_me(request):
     user = request.user
 
     if not user.is_authenticated:
-        return json_error("نشست مدیریتی فعال نیست.", 401)
+        return json_error(
+            "نشست مدیریتی فعال نیست.",
+            401,
+        )
 
-    if not user.is_active or not user.is_staff or not user.is_superuser:
+    if (
+        not user.is_active
+        or not user.is_staff
+        or not user.is_superuser
+    ):
         logout(request)
-        return json_error("دسترسی مدیریتی معتبر نیست.", 403)
+
+        return json_error(
+            "دسترسی مدیریتی معتبر نیست.",
+            403,
+        )
 
     return JsonResponse({
         "success": True,
@@ -175,7 +190,10 @@ def admin_me(request):
 @csrf_protect
 def admin_logout(request):
     if not request.user.is_authenticated:
-        return json_error("نشست فعالی وجود ندارد.", 401)
+        return json_error(
+            "نشست فعالی وجود ندارد.",
+            401,
+        )
 
     logout(request)
 
