@@ -196,6 +196,8 @@ class StoreConfigurationSerializer(serializers.ModelSerializer):
             "slogan",
             "support_phone",
             "support_email",
+            "seller_phone",
+            "seller_telegram",
             "address",
             "postal_code",
             "currency",
@@ -220,6 +222,8 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
             "slogan",
             "support_phone",
             "support_email",
+            "seller_phone",
+            "seller_telegram",
             "address",
             "postal_code",
             "currency",
@@ -251,6 +255,35 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
 
     def validate_slogan(self, value):
         return value.strip()
+
+    def validate_seller_phone(self, value):
+
+        value = value.strip()
+
+        if not re.fullmatch(r"[0-9+\-\s()]{7,20}", value):
+            raise serializers.ValidationError(
+                "شماره تماس فروشنده معتبر نیست."
+            )
+
+        return value
+
+    def validate_seller_telegram(self, value):
+
+        value = value.strip()
+
+        if value.startswith("@"):
+            username = value[1:]
+        elif "t.me/" in value:
+            username = value.rstrip("/").split("t.me/")[-1]
+        else:
+            username = value
+
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            raise serializers.ValidationError(
+                "آیدی تلگرام فروشنده معتبر نیست."
+            )
+
+        return "@" + username
 
     def validate_currency(self, value):
 
