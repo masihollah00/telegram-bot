@@ -1,6 +1,11 @@
 
+import json
+import math
 import os
+import re
 import warnings
+
+from urllib.parse import urlsplit
 
 from PIL import Image, UnidentifiedImageError
 
@@ -13,6 +18,169 @@ from .models import (
     SitePageSection,
     SiteNavigationLink,
 )
+
+
+# =========================================================
+# SHARED VALIDATION HELPERS
+# =========================================================
+
+HEX_COLOR_RE = re.compile(
+    r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|"
+    r"[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+)
+
+RGB_COLOR_RE = re.compile(
+    r"^rgba?\(\s*"
+    r"(?:\d{1,3}%?\s*,\s*){2}"
+    r"\d{1,3}%?"
+    r"(?:\s*,\s*(?:0|1|0?\.\d+|100%))?"
+    r"\s*\)$",
+    re.IGNORECASE,
+)
+
+HSL_COLOR_RE = re.compile(
+    r"^hsla?\(\s*"
+    r"-?\d+(?:\.\d+)?(?:deg|rad|turn)?\s*,\s*"
+    r"\d{1,3}%\s*,\s*\d{1,3}%"
+    r"(?:\s*,\s*(?:0|1|0?\.\d+))?"
+    r"\s*\)$",
+    re.IGNORECASE,
+)
+
+SAFE_CSS_LENGTH_RE = re.compile(
+    r"^(?:0|"
+    r"\d+(?:\.\d+)?(?:px|rem|em|vw|vh|%)"
+    r")$",
+    re.IGNORECASE,
+)
+
+SAFE_CSS_NUMBER_RE = re.compile(
+    r"^\d+(?:\.\d+)?$"
+)
+
+SAFE_SLUG_RE = re.compile(
+    r"^[a-zA-Z0-9_-]+$"
+)
+
+
+def validate_json_object(
+    value,
+    label,
+    max_bytes=32768,
+    max_depth=8,
+    max_items=500,
+):
+    """
+    Validate JSON data size, nesting and value types.
+    """
+
+    if not isinstance(value, dict):
+        raise serializers.ValidationError(
+            f"{label} باید یک شیء معتبر باشد."
+        )
+
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+
+    except (TypeError, ValueError):
+        raise serializers.ValidationError(
+            f"{label} شامل داده نامعتبر است."
+        )
+
+    if len(encoded) > max_bytes:
+        raise serializers.ValidationError(
+            f"حجم {label} بیش از حد مجاز است."
+        )
+
+    item_count = 0
+
+    def inspect(node, depth=0):
+
+        nonlocal item_count
+
+        if depth > max_depth:
+            raise serializers.ValidationError(
+                f"ساختار {label} بیش از حد تو در تو است."
+            )
+
+        item_count += 1
+
+        if item_count > max_items:
+            raise serializers.ValidationError(
+                f"تعداد داده‌های {label} بیش از حد مجاز است."
+            )
+
+        if isinstance(node, dict):
+
+            for key, child in node.items():
+
+                if not isinstance(key, str) or len(key) > 120:
+                    raise serializers.ValidationError(
+                        f"کلید نامعتبر در {label} وجود دارد."
+                    )
+
+                inspect(child, depth + 1)
+
+        elif isinstance(node, list):
+
+            for child in node:
+                inspect(child, depth + 1)
+
+        elif isinstance(node, str):
+
+            if len(node) > 5000:
+                raise serializers.ValidationError(
+                    f"یکی از مقادیر متنی {label} بیش از حد طولانی است."
+                )
+
+        elif isinstance(node, float):
+
+            if not math.isfinite(node):
+                raise serializers.ValidationError(
+                    f"مقدار عددی نامعتبر در {label} وجود دارد."
+                )
+
+        elif node is None or isinstance(node, (bool, int)):
+            pass
+
+        else:
+            raise serializers.ValidationError(
+                f"نوع داده نامعتبر در {label} وجود دارد."
+            )
+
+    inspect(value)
+
+    return value
+
+
+def validate_safe_color(value, label="رنگ"):
+
+    if not isinstance(value, str):
+        raise serializers.ValidationError(
+            f"{label} باید متنی باشد."
+        )
+
+    normalized = value.strip()
+
+    if len(normalized) > 40:
+        raise serializers.ValidationError(
+            f"{label} بیش از حد طولانی است."
+        )
+
+    if not (
+        HEX_COLOR_RE.fullmatch(normalized)
+        or RGB_COLOR_RE.fullmatch(normalized)
+        or HSL_COLOR_RE.fullmatch(normalized)
+    ):
+        raise serializers.ValidationError(
+            f"فرمت {label} معتبر نیست."
+        )
+
+    return normalized
 
 
 # =========================================================
@@ -70,9 +238,58 @@ class StoreConfigurationAdminSerializer(serializers.ModelSerializer):
             "updated_by",
         ]
 
+    def validate_store_name(self, value):
+
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "نام فروشگاه نمی‌تواند خالی باشد."
+            )
+
+        return value
+
+    def validate_slogan(self, value):
+        return value.strip()
+
+    def validate_currency(self, value):
+
+        value = value.strip().upper()
+
+        if not re.fullmatch(r"[A-Z]{3,10}", value):
+            raise serializers.ValidationError(
+                "کد واحد پول معتبر نیست."
+            )
+
+        return value
+
+    def validate_announcement_link(self, value):
+
+        value = value.strip()
+
+        if not value:
+            return value
+
+        if value.startswith("/") and not value.startswith("//"):
+            return value
+
+        parsed = urlsplit(value)
+
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+        ):
+            raise serializers.ValidationError(
+                "لینک اطلاعیه باید یک آدرس معتبر HTTP یا HTTPS باشد."
+            )
+
+        return value
+
 
 # =========================================================
-# SITE THEME
+# SITE THEME — PUBLIC
 # =========================================================
 
 class SiteThemeSerializer(serializers.ModelSerializer):
@@ -92,6 +309,10 @@ class SiteThemeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+
+# =========================================================
+# SITE THEME — ADMIN
+# =========================================================
 
 class SiteThemeAdminSerializer(serializers.ModelSerializer):
 
@@ -124,12 +345,32 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
         "--jalali-section-gap",
     }
 
+    COLOR_CSS_VARIABLES = {
+        "--jalali-primary",
+        "--jalali-secondary",
+        "--jalali-accent",
+        "--jalali-background",
+        "--jalali-surface",
+        "--jalali-text",
+        "--jalali-muted",
+        "--jalali-border",
+    }
+
+    LENGTH_CSS_VARIABLES = {
+        "--jalali-radius",
+        "--jalali-container-width",
+        "--jalali-section-gap",
+    }
+
     def validate_colors(self, value):
 
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "پالت رنگ باید یک شیء معتبر باشد."
-            )
+        validate_json_object(
+            value,
+            "پالت رنگ",
+            max_bytes=4096,
+            max_depth=2,
+            max_items=30,
+        )
 
         unknown = set(value.keys()) - self.ALLOWED_COLOR_KEYS
 
@@ -140,35 +381,27 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
             )
 
         for key, color in value.items():
-
-            if not isinstance(color, str) or len(color) > 40:
-                raise serializers.ValidationError(
-                    f"مقدار رنگ {key} معتبر نیست."
-                )
-
-            normalized = color.strip().lower()
-
-            if not (
-                normalized.startswith("#")
-                or normalized.startswith("rgb(")
-                or normalized.startswith("rgba(")
-                or normalized.startswith("hsl(")
-                or normalized.startswith("hsla(")
-            ):
-                raise serializers.ValidationError(
-                    f"فرمت رنگ {key} پشتیبانی نمی‌شود."
-                )
+            value[key] = validate_safe_color(
+                color,
+                f"رنگ {key}",
+            )
 
         return value
 
     def validate_custom_css_variables(self, value):
 
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "متغیرهای طراحی باید یک شیء معتبر باشند."
-            )
+        validate_json_object(
+            value,
+            "متغیرهای CSS",
+            max_bytes=4096,
+            max_depth=2,
+            max_items=30,
+        )
 
-        unknown = set(value.keys()) - self.ALLOWED_CSS_VARIABLES
+        unknown = (
+            set(value.keys())
+            - self.ALLOWED_CSS_VARIABLES
+        )
 
         if unknown:
             raise serializers.ValidationError(
@@ -176,42 +409,149 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
                 + ", ".join(sorted(unknown))
             )
 
+        cleaned = {}
+
         for key, item in value.items():
 
             if not isinstance(item, (str, int, float)):
                 raise serializers.ValidationError(
-                    f"مقدار {key} باید متنی یا عددی باشد."
+                    f"مقدار {key} معتبر نیست."
                 )
 
-            if len(str(item)) > 100:
+            if isinstance(item, bool):
                 raise serializers.ValidationError(
-                    f"مقدار {key} بیش از حد طولانی است."
+                    f"مقدار {key} نمی‌تواند بولی باشد."
                 )
 
-        return value
+            text_value = str(item).strip()
+
+            if not text_value or len(text_value) > 40:
+                raise serializers.ValidationError(
+                    f"مقدار {key} معتبر نیست."
+                )
+
+            if key in self.COLOR_CSS_VARIABLES:
+
+                cleaned[key] = validate_safe_color(
+                    text_value,
+                    key,
+                )
+
+            elif key in self.LENGTH_CSS_VARIABLES:
+
+                if not (
+                    SAFE_CSS_LENGTH_RE.fullmatch(text_value)
+                ):
+                    raise serializers.ValidationError(
+                        f"مقدار اندازه‌ای {key} معتبر نیست."
+                    )
+
+                cleaned[key] = text_value
+
+        return cleaned
 
     def validate_assets(self, value):
 
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "دارایی‌های تم باید یک شیء معتبر باشند."
-            )
+        validate_json_object(
+            value,
+            "دارایی‌های تم",
+            max_bytes=8192,
+            max_depth=3,
+            max_items=60,
+        )
+
+        normalized = {}
 
         for key, asset_id in value.items():
 
-            if not isinstance(key, str) or len(key) > 80:
+            if not isinstance(key, str):
                 raise serializers.ValidationError(
                     "شناسه جایگاه تصویر معتبر نیست."
                 )
 
-            if asset_id is not None and not isinstance(
-                asset_id, (int, str)
-            ):
+            if not SAFE_SLUG_RE.fullmatch(key):
                 raise serializers.ValidationError(
-                    f"شناسه دارایی {key} معتبر نیست."
+                    "شناسه جایگاه تصویر فقط می‌تواند شامل "
+                    "حروف انگلیسی، عدد، خط تیره و زیرخط باشد."
                 )
 
-        return value
+            if asset_id is None:
+                normalized[key] = None
+                continue
+
+            try:
+                numeric_id = int(asset_id)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(
+                    f"شناسه تصویر {key} باید عدد معتبر باشد."
+                )
+
+            if numeric_id <= 0:
+                raise serializers.ValidationError(
+                    f"شناسه تصویر {key} معتبر نیست."
+                )
+
+            normalized[key] = numeric_id
+
+        ids = [
+            item
+            for item in normalized.values()
+            if item is not None
+        ]
+
+        if ids:
+
+            existing = set(
+                SiteAsset.objects.filter(
+                    pk__in=ids,
+                    is_active=True,
+                    asset_type__in=[
+                        SiteAsset.AssetType.IMAGE,
+                        SiteAsset.AssetType.BANNER,
+                        SiteAsset.AssetType.LOGO,
+                    ],
+                ).values_list("pk", flat=True)
+            )
+
+            missing = set(ids) - existing
+
+            if missing:
+                raise serializers.ValidationError(
+                    "برخی تصاویر انتخاب‌شده وجود ندارند، "
+                    "غیرفعال هستند یا نوع مجاز ندارند."
+                )
+
+        return normalized
+
+    def validate_typography(self, value):
+
+        return validate_json_object(
+            value,
+            "تنظیمات تایپوگرافی",
+            max_bytes=8192,
+            max_depth=5,
+            max_items=100,
+        )
+
+    def validate_layout(self, value):
+
+        return validate_json_object(
+            value,
+            "تنظیمات چیدمان",
+            max_bytes=8192,
+            max_depth=5,
+            max_items=100,
+        )
+
+    def validate_motion(self, value):
+
+        return validate_json_object(
+            value,
+            "تنظیمات حرکت",
+            max_bytes=8192,
+            max_depth=5,
+            max_items=100,
+        )
 
     class Meta:
         model = SiteTheme
@@ -233,6 +573,17 @@ class SiteThemeAdminSerializer(serializers.ModelSerializer):
             "updated_at",
             "updated_by",
         ]
+
+    def validate_name(self, value):
+
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "نام تم نمی‌تواند خالی باشد."
+            )
+
+        return value
 
 
 # =========================================================
@@ -284,19 +635,20 @@ class SiteAssetSerializer(serializers.ModelSerializer):
 
 
 # =========================================================
-# CENTRAL MEDIA LIBRARY ADMIN SERIALIZER
+# CENTRAL MEDIA LIBRARY — ADMIN
 # =========================================================
 
 class SiteAssetAdminSerializer(serializers.ModelSerializer):
 
-    file_url = serializers.SerializerMethodField(read_only=True)
+    file_url = serializers.SerializerMethodField(
+        read_only=True,
+    )
 
     ALLOWED_IMAGE_EXTENSIONS = {
         ".jpg",
         ".jpeg",
         ".png",
         ".webp",
-        ".avif",
         ".gif",
     }
 
@@ -310,7 +662,6 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
         ".png": "PNG",
         ".webp": "WEBP",
         ".gif": "GIF",
-        ".avif": "AVIF",
     }
 
     class Meta:
@@ -353,18 +704,31 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
             else url
         )
 
+    def validate_title(self, value):
+
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "عنوان فایل الزامی است."
+            )
+
+        return value
+
     def validate_file(self, uploaded_file):
 
         extension = os.path.splitext(
             uploaded_file.name
         )[1].lower()
 
-        allowed = self.ALLOWED_IMAGE_EXTENSIONS | {".pdf"}
+        allowed = (
+            self.ALLOWED_IMAGE_EXTENSIONS
+            | {".pdf"}
+        )
 
         if extension not in allowed:
             raise serializers.ValidationError(
-                "فرمت فایل مجاز نیست. "
-                "فرمت‌های مجاز: JPG، PNG، WEBP، GIF، AVIF و PDF."
+                "فرمت مجاز: JPG، PNG، WEBP، GIF و PDF."
             )
 
         if uploaded_file.size <= 0:
@@ -378,6 +742,16 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
             )
 
         return uploaded_file
+
+    def validate_metadata(self, value):
+
+        return validate_json_object(
+            value,
+            "اطلاعات تکمیلی فایل",
+            max_bytes=8192,
+            max_depth=5,
+            max_items=100,
+        )
 
     def validate(self, attrs):
 
@@ -419,7 +793,19 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
 
         if extension == ".pdf":
             raise serializers.ValidationError({
-                "file": "فایل PDF نمی‌تواند به‌عنوان تصویر ثبت شود."
+                "file": (
+                    "فایل PDF نمی‌تواند به‌عنوان تصویر "
+                    "ثبت شود."
+                )
+            })
+
+        expected_format = self.IMAGE_FORMATS.get(
+            extension,
+        )
+
+        if not expected_format:
+            raise serializers.ValidationError({
+                "file": "فرمت تصویر پشتیبانی نمی‌شود."
             })
 
         try:
@@ -444,14 +830,13 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
                         "file": "ابعاد تصویر معتبر نیست."
                     })
 
-                if width * height > self.MAX_IMAGE_PIXELS:
+                if (
+                    width * height
+                    > self.MAX_IMAGE_PIXELS
+                ):
                     raise serializers.ValidationError({
                         "file": "ابعاد تصویر بیش از حد مجاز است."
                     })
-
-                expected_format = self.IMAGE_FORMATS.get(
-                    extension
-                )
 
                 if detected_format != expected_format:
                     raise serializers.ValidationError({
@@ -474,7 +859,9 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
             ValueError,
         ):
             raise serializers.ValidationError({
-                "file": "تصویر معتبر نیست یا قابل پردازش نیست."
+                "file": (
+                    "تصویر معتبر نیست یا قابل پردازش نیست."
+                )
             })
 
         finally:
@@ -482,18 +869,9 @@ class SiteAssetAdminSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    def validate_metadata(self, value):
-
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "اطلاعات تکمیلی باید یک شیء معتبر باشد."
-            )
-
-        return value
-
 
 # =========================================================
-# PAGE BUILDER
+# PAGE BUILDER — PUBLIC
 # =========================================================
 
 class SitePageSectionSerializer(serializers.ModelSerializer):
@@ -513,6 +891,10 @@ class SitePageSectionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+
+# =========================================================
+# PAGE BUILDER — ADMIN
+# =========================================================
 
 class SitePageSectionAdminSerializer(serializers.ModelSerializer):
 
@@ -534,6 +916,28 @@ class SitePageSectionAdminSerializer(serializers.ModelSerializer):
         "custom_content",
     }
 
+    def validate_page_key(self, value):
+
+        value = value.strip()
+
+        if not SAFE_SLUG_RE.fullmatch(value):
+            raise serializers.ValidationError(
+                "شناسه صفحه معتبر نیست."
+            )
+
+        return value
+
+    def validate_section_key(self, value):
+
+        value = value.strip()
+
+        if not SAFE_SLUG_RE.fullmatch(value):
+            raise serializers.ValidationError(
+                "شناسه بخش معتبر نیست."
+            )
+
+        return value
+
     def validate_section_type(self, value):
 
         if value not in self.ALLOWED_SECTION_TYPES:
@@ -545,21 +949,23 @@ class SitePageSectionAdminSerializer(serializers.ModelSerializer):
 
     def validate_content(self, value):
 
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "محتوای بخش باید یک شیء معتبر باشد."
-            )
-
-        return value
+        return validate_json_object(
+            value,
+            "محتوای بخش",
+            max_bytes=32768,
+            max_depth=8,
+            max_items=500,
+        )
 
     def validate_settings(self, value):
 
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(
-                "تنظیمات بخش باید یک شیء معتبر باشد."
-            )
-
-        return value
+        return validate_json_object(
+            value,
+            "تنظیمات بخش",
+            max_bytes=16384,
+            max_depth=6,
+            max_items=250,
+        )
 
     class Meta:
         model = SitePageSection
@@ -584,7 +990,7 @@ class SitePageSectionAdminSerializer(serializers.ModelSerializer):
 
 
 # =========================================================
-# NAVIGATION
+# NAVIGATION — PUBLIC
 # =========================================================
 
 class SiteNavigationLinkSerializer(serializers.ModelSerializer):
@@ -603,7 +1009,22 @@ class SiteNavigationLinkSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+# =========================================================
+# NAVIGATION — ADMIN
+# =========================================================
+
 class SiteNavigationLinkAdminSerializer(serializers.ModelSerializer):
+
+    def validate_label(self, value):
+
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "عنوان لینک الزامی است."
+            )
+
+        return value
 
     def validate_url(self, value):
 
@@ -614,26 +1035,60 @@ class SiteNavigationLinkAdminSerializer(serializers.ModelSerializer):
                 "آدرس لینک نمی‌تواند خالی باشد."
             )
 
-        if value.startswith("//"):
+        if any(ord(char) < 32 for char in value):
             raise serializers.ValidationError(
-                "آدرس نسبی پروتکل مجاز نیست."
+                "آدرس لینک دارای نویسه غیرمجاز است."
             )
 
         if value.startswith("/"):
+
+            if value.startswith("//"):
+                raise serializers.ValidationError(
+                    "آدرس نسبی پروتکل مجاز نیست."
+                )
+
             return value
 
-        if not (
-            value.startswith("https://")
-            or value.startswith("http://")
-            or value.startswith("mailto:")
-            or value.startswith("tel:")
-        ):
-            raise serializers.ValidationError(
-                "لینک باید مسیر داخلی یا آدرس معتبر HTTP، HTTPS، "
-                "ایمیل یا تلفن باشد."
-            )
+        parsed = urlsplit(value)
 
-        return value
+        if parsed.scheme in ("http", "https"):
+
+            if (
+                not parsed.netloc
+                or parsed.username
+                or parsed.password
+            ):
+                raise serializers.ValidationError(
+                    "آدرس وب معتبر نیست."
+                )
+
+            return value
+
+        if parsed.scheme == "mailto":
+
+            if not parsed.path or "@" not in parsed.path:
+                raise serializers.ValidationError(
+                    "آدرس ایمیل معتبر نیست."
+                )
+
+            return value
+
+        if parsed.scheme == "tel":
+
+            if not re.fullmatch(
+                r"\+?[0-9()\-\s]{5,25}",
+                parsed.path,
+            ):
+                raise serializers.ValidationError(
+                    "شماره تلفن لینک معتبر نیست."
+                )
+
+            return value
+
+        raise serializers.ValidationError(
+            "لینک باید مسیر داخلی یا آدرس معتبر "
+            "HTTP، HTTPS، ایمیل یا تلفن باشد."
+        )
 
     class Meta:
         model = SiteNavigationLink
