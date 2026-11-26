@@ -17,23 +17,36 @@ def env_list(name, default=""):
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+# ---------------------------------------------------------
+# SECURITY
+# ---------------------------------------------------------
+
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
-    os.getenv(
-        "SECRET_KEY",
-        "jalali-cosmetics-development-key-change-before-production",
-    ),
+    os.getenv("SECRET_KEY", ""),
 )
+
+if not SECRET_KEY and not env_bool("DJANGO_DEBUG", False):
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY باید در محیط سرور تنظیم شود."
+    )
+
+if not SECRET_KEY:
+    SECRET_KEY = "jalali-local-development-only-key"
 
 DEBUG = env_bool("DJANGO_DEBUG", env_bool("DEBUG", False))
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
-    os.getenv("ALLOWED_HOSTS", "*"),
+    os.getenv("ALLOWED_HOSTS", ""),
 )
 
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
+
+# ---------------------------------------------------------
+# APPLICATIONS
+# ---------------------------------------------------------
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -53,6 +66,10 @@ INSTALLED_APPS = [
 ]
 
 
+# ---------------------------------------------------------
+# MIDDLEWARE
+# ---------------------------------------------------------
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -66,8 +83,11 @@ MIDDLEWARE = [
 ]
 
 
-ROOT_URLCONF = "config.urls"
+# ---------------------------------------------------------
+# URLS AND TEMPLATES
+# ---------------------------------------------------------
 
+ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
     {
@@ -85,10 +105,13 @@ TEMPLATES = [
     },
 ]
 
-
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+
+# ---------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -103,15 +126,10 @@ if DATABASE_URL:
                 ssl_require=not DEBUG,
             )
         }
-
-    except ImportError:
-        DATABASES = {
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": BASE_DIR / "db.sqlite3",
-            }
-        }
-
+    except ImportError as exc:
+        raise RuntimeError(
+            "برای استفاده از DATABASE_URL باید dj-database-url نصب باشد."
+        ) from exc
 else:
     DATABASES = {
         "default": {
@@ -120,6 +138,10 @@ else:
         }
     }
 
+
+# ---------------------------------------------------------
+# PASSWORD VALIDATION
+# ---------------------------------------------------------
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -137,22 +159,35 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
+# ---------------------------------------------------------
+# LANGUAGE AND TIME
+# ---------------------------------------------------------
+
 LANGUAGE_CODE = "fa-ir"
 TIME_ZONE = "Asia/Tehran"
 USE_I18N = True
 USE_TZ = True
 
 
+# ---------------------------------------------------------
+# STATIC AND MEDIA
+# ---------------------------------------------------------
+
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STATICFILES_STORAGE = (
+    "whitenoise.storage.CompressedManifestStaticFilesStorage"
+)
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+
+# ---------------------------------------------------------
+# DJANGO REST FRAMEWORK
+# ---------------------------------------------------------
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
@@ -170,8 +205,6 @@ REST_FRAMEWORK = {
 
     "PAGE_SIZE": 24,
 
-    # نرخ‌های محدودیت درخواست برای عملیات مدیریتی
-    # این نرخ‌ها پس از اتصال کلاس‌های throttle به Viewها فعال می‌شوند.
     "DEFAULT_THROTTLE_RATES": {
         "admin_write": "60/hour",
         "admin_upload": "20/hour",
@@ -180,9 +213,23 @@ REST_FRAMEWORK = {
 }
 
 
+# ---------------------------------------------------------
+# CORS
+# ---------------------------------------------------------
+
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
 
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "authorization",
+    "content-type",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
 
 if not CORS_ALLOWED_ORIGINS and DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
@@ -190,17 +237,36 @@ else:
     CORS_ALLOW_ALL_ORIGINS = False
 
 
+# ---------------------------------------------------------
+# CROSS-ORIGIN SESSION AND CSRF COOKIES
+# ---------------------------------------------------------
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SAMESITE = (
+    os.getenv("SESSION_COOKIE_SAMESITE", "None")
+)
+
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SAMESITE = (
+    os.getenv("CSRF_COOKIE_SAMESITE", "None")
+)
+
+CSRF_USE_SESSIONS = False
+
+
+# ---------------------------------------------------------
+# PROXY AND HTTPS
+# ---------------------------------------------------------
+
 SECURE_PROXY_SSL_HEADER = (
     "HTTP_X_FORWARDED_PROTO",
     "https",
 )
 
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
-
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
-
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = env_bool(
