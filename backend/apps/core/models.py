@@ -40,6 +40,12 @@ class StoreConfiguration(models.Model):
         verbose_name="شعار فروشگاه",
     )
 
+    site_url = models.URLField(
+        blank=True,
+        max_length=500,
+        verbose_name="آدرس اصلی سایت",
+    )
+
     support_phone = models.CharField(
         max_length=20,
         blank=True,
