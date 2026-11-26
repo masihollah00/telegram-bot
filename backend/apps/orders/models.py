@@ -4,10 +4,12 @@ import uuid
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 
 class Order(models.Model):
+
     class Status(models.TextChoices):
         PENDING = "pending", "در انتظار بررسی"
         CONFIRMED = "confirmed", "تأیید شده"
@@ -24,6 +26,10 @@ class Order(models.Model):
         FAILED = "failed", "ناموفق"
         REFUNDED = "refunded", "بازپرداخت شده"
 
+    class CustomerType(models.TextChoices):
+        REGISTERED = "registered", "مشتری دارای حساب"
+        GUEST = "guest", "خرید مهمان"
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -36,10 +42,27 @@ class Order(models.Model):
         db_index=True,
     )
 
+    # حساب کاربری اختیاری است؛ خرید مهمان نیز مجاز خواهد بود.
     customer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="jalali_orders",
+        null=True,
+        blank=True,
+    )
+
+    customer_type = models.CharField(
+        max_length=20,
+        choices=CustomerType.choices,
+        default=CustomerType.REGISTERED,
+        db_index=True,
+    )
+
+    # فقط هش توکن پیگیری ذخیره می‌شود، نه خود توکن محرمانه.
+    guest_tracking_token_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
     )
 
     status = models.CharField(
@@ -62,7 +85,10 @@ class Order(models.Model):
     tax_amount = models.PositiveBigIntegerField(default=0)
     total_amount = models.PositiveBigIntegerField(default=0)
 
-    currency = models.CharField(max_length=8, default="IRT")
+    currency = models.CharField(
+        max_length=8,
+        default="IRT",
+    )
 
     customer_name = models.CharField(max_length=160)
     customer_phone = models.CharField(max_length=20)
@@ -93,17 +119,53 @@ class Order(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
         indexes = [
-            models.Index(fields=["status", "created_at"]),
-            models.Index(fields=["customer", "created_at"]),
-            models.Index(fields=["payment_status", "created_at"]),
+            models.Index(
+                fields=["status", "created_at"],
+                name="jal_order_status_date_idx",
+            ),
+            models.Index(
+                fields=["customer", "created_at"],
+                name="jal_order_customer_date_idx",
+            ),
+            models.Index(
+                fields=["payment_status", "created_at"],
+                name="jal_order_payment_date_idx",
+            ),
+            models.Index(
+                fields=["customer_type", "created_at"],
+                name="jal_order_type_date_idx",
+            ),
+        ]
+
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        customer_type="guest",
+                        customer__isnull=True,
+                    )
+                    |
+                    Q(
+                        customer_type="registered",
+                        customer__isnull=False,
+                    )
+                ),
+                name="jal_order_customer_type_valid",
+            ),
         ]
 
     def __str__(self):
         return self.order_number
 
+    @property
+    def is_guest_order(self):
+        return self.customer_id is None
+
 
 class OrderItem(models.Model):
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -124,8 +186,9 @@ class OrderItem(models.Model):
 
     product_name = models.CharField(max_length=250)
     product_sku = models.CharField(max_length=100)
+
     quantity = models.PositiveIntegerField(
-        validators=[MinValueValidator(1)]
+        validators=[MinValueValidator(1)],
     )
 
     unit_price = models.PositiveBigIntegerField()
@@ -149,6 +212,7 @@ class OrderItem(models.Model):
 
 
 class OrderStatusHistory(models.Model):
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -179,4 +243,7 @@ class OrderStatusHistory(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.order.order_number}: {self.new_status}"
+        return (
+            f"{self.order.order_number}: "
+            f"{self.new_status}"
+        )
