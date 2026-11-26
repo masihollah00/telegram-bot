@@ -1,12 +1,13 @@
+
 from django.db.models import Q
 
-from rest_framework import viewsets, filters
-from rest_framework.permissions import IsAdminUser
+from rest_framework import filters, serializers, viewsets
 from rest_framework.parsers import (
     JSONParser,
     FormParser,
     MultiPartParser,
 )
+from rest_framework.permissions import IsAdminUser
 
 from .models import (
     Product,
@@ -23,7 +24,15 @@ from .serializers import (
 )
 
 
+# =========================================================
+# BASE ADMIN VIEWSET
+# =========================================================
+
 class AdminBaseViewSet(viewsets.ModelViewSet):
+    """
+    پایه مشترک مدیریت محصولات فروشگاه JALALI
+    """
+
     permission_classes = [IsAdminUser]
 
     parser_classes = [
@@ -40,15 +49,18 @@ class AdminBaseViewSet(viewsets.ModelViewSet):
     ordering = ["-pk"]
 
 
+# =========================================================
+# CATEGORY ADMIN SERIALIZER
+# =========================================================
+
 class AdminProductCategorySerializer(
-    __import__(
-        "rest_framework.serializers",
-        fromlist=["ModelSerializer"]
-    ).ModelSerializer
+    serializers.ModelSerializer
 ):
+
     class Meta:
         model = ProductCategory
         fields = "__all__"
+
         read_only_fields = (
             "id",
             "created_at",
@@ -56,22 +68,30 @@ class AdminProductCategorySerializer(
         )
 
 
+# =========================================================
+# BRAND ADMIN SERIALIZER
+# =========================================================
+
 class AdminProductBrandSerializer(
-    __import__(
-        "rest_framework.serializers",
-        fromlist=["ModelSerializer"]
-    ).ModelSerializer
+    serializers.ModelSerializer
 ):
+
     class Meta:
         model = ProductBrand
         fields = "__all__"
+
         read_only_fields = (
             "id",
             "created_at",
         )
 
 
+# =========================================================
+# CATEGORY ADMIN VIEWSET
+# =========================================================
+
 class AdminProductCategoryViewSet(AdminBaseViewSet):
+
     serializer_class = AdminProductCategorySerializer
 
     queryset = ProductCategory.objects.all()
@@ -86,10 +106,29 @@ class AdminProductCategoryViewSet(AdminBaseViewSet):
         "name",
         "sort_order",
         "created_at",
+        "updated_at",
     ]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        active = self.request.query_params.get("active")
+
+        if active in ("true", "1"):
+            queryset = queryset.filter(is_active=True)
+
+        elif active in ("false", "0"):
+            queryset = queryset.filter(is_active=False)
+
+        return queryset
+
+
+# =========================================================
+# BRAND ADMIN VIEWSET
+# =========================================================
 
 class AdminProductBrandViewSet(AdminBaseViewSet):
+
     serializer_class = AdminProductBrandSerializer
 
     queryset = ProductBrand.objects.all()
@@ -105,14 +144,33 @@ class AdminProductBrandViewSet(AdminBaseViewSet):
         "created_at",
     ]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        active = self.request.query_params.get("active")
+
+        if active in ("true", "1"):
+            queryset = queryset.filter(is_active=True)
+
+        elif active in ("false", "0"):
+            queryset = queryset.filter(is_active=False)
+
+        return queryset
+
+
+# =========================================================
+# PRODUCT ADMIN VIEWSET
+# =========================================================
 
 class AdminProductViewSet(AdminBaseViewSet):
+
     serializer_class = ProductAdminSerializer
 
     search_fields = [
         "name",
         "sku",
         "barcode",
+        "short_description",
         "description",
         "category__name",
         "brand__name",
@@ -128,6 +186,7 @@ class AdminProductViewSet(AdminBaseViewSet):
     ]
 
     def get_queryset(self):
+
         queryset = (
             Product.objects
             .select_related(
@@ -140,19 +199,10 @@ class AdminProductViewSet(AdminBaseViewSet):
             )
         )
 
-        category = self.request.query_params.get(
-            "category"
-        )
+        params = self.request.query_params
 
-        brand = self.request.query_params.get(
-            "brand"
-        )
-
-        active = self.request.query_params.get(
-            "active"
-        )
-
-        sku = self.request.query_params.get("sku")
+        # Category filter
+        category = params.get("category")
 
         if category:
             queryset = queryset.filter(
@@ -160,11 +210,17 @@ class AdminProductViewSet(AdminBaseViewSet):
                 | Q(category__id=category)
             )
 
+        # Brand filter
+        brand = params.get("brand")
+
         if brand:
             queryset = queryset.filter(
                 Q(brand__slug=brand)
                 | Q(brand__id=brand)
             )
+
+        # Active filter
+        active = params.get("active")
 
         if active in ("true", "1"):
             queryset = queryset.filter(is_active=True)
@@ -172,18 +228,63 @@ class AdminProductViewSet(AdminBaseViewSet):
         elif active in ("false", "0"):
             queryset = queryset.filter(is_active=False)
 
+        # Featured filter
+        featured = params.get("featured")
+
+        if featured in ("true", "1"):
+            queryset = queryset.filter(is_featured=True)
+
+        elif featured in ("false", "0"):
+            queryset = queryset.filter(is_featured=False)
+
+        # SKU exact filter
+        sku = params.get("sku")
+
         if sku:
-            queryset = queryset.filter(sku__iexact=sku.strip())
+            queryset = queryset.filter(
+                sku__iexact=sku.strip()
+            )
+
+        # Availability filter
+        availability = params.get("availability")
+
+        if availability in (
+            Product.Availability.IN_STOCK,
+            Product.Availability.OUT_OF_STOCK,
+        ):
+            queryset = queryset.filter(
+                availability=availability
+            )
+
+        # Stock filters
+        stock = params.get("stock")
+
+        if stock == "available":
+            queryset = queryset.filter(
+                stock_quantity__gt=0
+            )
+
+        elif stock == "empty":
+            queryset = queryset.filter(
+                stock_quantity=0
+            )
 
         return queryset
 
 
+# =========================================================
+# PRODUCT IMAGE ADMIN VIEWSET
+# =========================================================
+
 class AdminProductImageViewSet(AdminBaseViewSet):
+
     serializer_class = ProductImageAdminSerializer
 
-    queryset = ProductImage.objects.select_related(
-        "product"
-    ).all()
+    queryset = (
+        ProductImage.objects
+        .select_related("product")
+        .all()
+    )
 
     search_fields = [
         "product__name",
@@ -197,6 +298,7 @@ class AdminProductImageViewSet(AdminBaseViewSet):
     ]
 
     def get_queryset(self):
+
         queryset = super().get_queryset()
 
         product_id = self.request.query_params.get(
@@ -208,15 +310,36 @@ class AdminProductImageViewSet(AdminBaseViewSet):
                 product_id=product_id
             )
 
+        primary = self.request.query_params.get(
+            "primary"
+        )
+
+        if primary in ("true", "1"):
+            queryset = queryset.filter(
+                is_primary=True
+            )
+
+        elif primary in ("false", "0"):
+            queryset = queryset.filter(
+                is_primary=False
+            )
+
         return queryset
 
 
+# =========================================================
+# PRODUCT PRICE TIER ADMIN VIEWSET
+# =========================================================
+
 class AdminProductPriceTierViewSet(AdminBaseViewSet):
+
     serializer_class = ProductPriceTierAdminSerializer
 
-    queryset = ProductPriceTier.objects.select_related(
-        "product"
-    ).all()
+    queryset = (
+        ProductPriceTier.objects
+        .select_related("product")
+        .all()
+    )
 
     search_fields = [
         "product__name",
@@ -230,6 +353,7 @@ class AdminProductPriceTierViewSet(AdminBaseViewSet):
     ]
 
     def get_queryset(self):
+
         queryset = super().get_queryset()
 
         product_id = self.request.query_params.get(
@@ -239,6 +363,20 @@ class AdminProductPriceTierViewSet(AdminBaseViewSet):
         if product_id:
             queryset = queryset.filter(
                 product_id=product_id
+            )
+
+        active = self.request.query_params.get(
+            "active"
+        )
+
+        if active in ("true", "1"):
+            queryset = queryset.filter(
+                is_active=True
+            )
+
+        elif active in ("false", "0"):
+            queryset = queryset.filter(
+                is_active=False
             )
 
         return queryset
