@@ -3,12 +3,15 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
+from rest_framework.test import APIRequestFactory
+
 from .models import (
     StoreConfiguration,
     SiteTheme,
     SitePageSection,
     SiteNavigationLink,
 )
+
 from .serializers import (
     StoreConfigurationSerializer,
     SiteThemeAdminSerializer,
@@ -16,9 +19,25 @@ from .serializers import (
     SiteNavigationLinkAdminSerializer,
 )
 
+from .throttles import (
+    AdminUserRateThrottle,
+    AdminUploadRateThrottle,
+)
+
+from .views import (
+    AdminBaseViewSet,
+    AdminSiteAssetViewSet,
+    StoreConfigurationAdminView,
+    AssignGalleryAssetView,
+)
+
 
 User = get_user_model()
 
+
+# =========================================================
+# STORE CONFIGURATION TESTS
+# =========================================================
 
 class StoreConfigurationTests(TestCase):
 
@@ -45,13 +64,15 @@ class StoreConfigurationTests(TestCase):
             store_name="JALALI COSMETICS",
         )
 
-        serializer = StoreConfigurationSerializer(configuration)
+        serializer = StoreConfigurationSerializer(
+            configuration,
+        )
+
         data = serializer.data
 
         self.assertNotIn("updated_by", data)
         self.assertNotIn("id", data)
 
-        # این فیلدها طبق طراحی فعلی در خروجی عمومی وجود دارند.
         self.assertIn("maintenance_mode", data)
         self.assertIn("maintenance_message", data)
 
@@ -63,6 +84,10 @@ class StoreConfigurationTests(TestCase):
             set(serializer.Meta.fields),
         )
 
+
+# =========================================================
+# SITE THEME TESTS
+# =========================================================
 
 class SiteThemeTests(TestCase):
 
@@ -84,7 +109,9 @@ class SiteThemeTests(TestCase):
         self.assertTrue(second.is_active)
 
         self.assertEqual(
-            SiteTheme.objects.filter(is_active=True).count(),
+            SiteTheme.objects.filter(
+                is_active=True,
+            ).count(),
             1,
         )
 
@@ -102,7 +129,10 @@ class SiteThemeTests(TestCase):
             }
         )
 
-        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
 
     def test_unknown_color_key_is_rejected(self):
         serializer = SiteThemeAdminSerializer(
@@ -128,8 +158,16 @@ class SiteThemeTests(TestCase):
         )
 
         self.assertFalse(serializer.is_valid())
-        self.assertIn("custom_css_variables", serializer.errors)
 
+        self.assertIn(
+            "custom_css_variables",
+            serializer.errors,
+        )
+
+
+# =========================================================
+# PAGE BUILDER TESTS
+# =========================================================
 
 class SitePageSectionTests(TestCase):
 
@@ -152,7 +190,10 @@ class SitePageSectionTests(TestCase):
             }
         )
 
-        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
 
     def test_unsupported_section_type_is_rejected(self):
         serializer = SitePageSectionAdminSerializer(
@@ -166,7 +207,11 @@ class SitePageSectionTests(TestCase):
         )
 
         self.assertFalse(serializer.is_valid())
-        self.assertIn("section_type", serializer.errors)
+
+        self.assertIn(
+            "section_type",
+            serializer.errors,
+        )
 
     def test_duplicate_page_section_key_is_rejected_by_database(self):
         SitePageSection.objects.create(
@@ -184,6 +229,10 @@ class SitePageSectionTests(TestCase):
                 )
 
 
+# =========================================================
+# NAVIGATION TESTS
+# =========================================================
+
 class SiteNavigationTests(TestCase):
 
     def test_internal_navigation_path_is_accepted(self):
@@ -196,7 +245,10 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
 
     def test_https_navigation_url_is_accepted(self):
         serializer = SiteNavigationLinkAdminSerializer(
@@ -208,7 +260,10 @@ class SiteNavigationTests(TestCase):
             }
         )
 
-        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
 
     def test_javascript_navigation_url_is_rejected(self):
         serializer = SiteNavigationLinkAdminSerializer(
@@ -234,6 +289,10 @@ class SiteNavigationTests(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("url", serializer.errors)
 
+
+# =========================================================
+# ADMIN USER TESTS
+# =========================================================
 
 class SiteManagementAdminTests(TestCase):
 
@@ -276,4 +335,151 @@ class SiteManagementAdminTests(TestCase):
         self.assertEqual(
             link.updated_by_id,
             self.admin_user.pk,
+        )
+
+
+# =========================================================
+# ADMIN THROTTLE CONFIGURATION TESTS
+# =========================================================
+
+class AdminThrottleConfigurationTests(TestCase):
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def prepare_view(self, view_class, method):
+        view = view_class()
+
+        request_method = getattr(
+            self.factory,
+            method.lower(),
+        )
+
+        view.request = request_method(
+            "/api/store/admin/test/",
+        )
+
+        return view
+
+    def test_admin_base_viewset_does_not_throttle_get(self):
+        view = self.prepare_view(
+            AdminBaseViewSet,
+            "GET",
+        )
+
+        self.assertEqual(
+            view.get_throttles(),
+            [],
+        )
+
+    def test_admin_base_viewset_throttles_post(self):
+        view = self.prepare_view(
+            AdminBaseViewSet,
+            "POST",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUserRateThrottle,
+        )
+
+    def test_admin_base_viewset_throttles_patch(self):
+        view = self.prepare_view(
+            AdminBaseViewSet,
+            "PATCH",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUserRateThrottle,
+        )
+
+    def test_admin_base_viewset_throttles_delete(self):
+        view = self.prepare_view(
+            AdminBaseViewSet,
+            "DELETE",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUserRateThrottle,
+        )
+
+    def test_media_upload_uses_upload_throttle(self):
+        view = self.prepare_view(
+            AdminSiteAssetViewSet,
+            "POST",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUploadRateThrottle,
+        )
+
+    def test_media_list_does_not_use_upload_throttle(self):
+        view = self.prepare_view(
+            AdminSiteAssetViewSet,
+            "GET",
+        )
+
+        self.assertEqual(
+            view.get_throttles(),
+            [],
+        )
+
+    def test_store_configuration_write_uses_admin_throttle(self):
+        view = self.prepare_view(
+            StoreConfigurationAdminView,
+            "PATCH",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUserRateThrottle,
+        )
+
+    def test_gallery_assignment_uses_admin_throttle(self):
+        view = self.prepare_view(
+            AssignGalleryAssetView,
+            "POST",
+        )
+
+        throttles = view.get_throttles()
+
+        self.assertEqual(len(throttles), 1)
+
+        self.assertIsInstance(
+            throttles[0],
+            AdminUserRateThrottle,
+        )
+
+    def test_gallery_assignment_get_is_not_throttled(self):
+        view = self.prepare_view(
+            AssignGalleryAssetView,
+            "GET",
+        )
+
+        self.assertEqual(
+            view.get_throttles(),
+            [],
         )
