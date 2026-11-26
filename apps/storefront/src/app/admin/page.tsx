@@ -7,7 +7,6 @@ import type { FormEvent, ReactNode } from "react";
 import {
   ShieldCheck,
   LockKeyhole,
-  UserRound,
   Eye,
   EyeOff,
   Sparkles,
@@ -44,6 +43,7 @@ type AdminUser = {
 };
 
 type StoreConfiguration = {
+  site_url?: string;
   seller_phone: string;
   seller_telegram: string;
   store_name?: string;
@@ -162,8 +162,6 @@ const AUTH_PATH = "/api/store/admin/auth";
 const DASHBOARD_PATH = "/api/store/admin/dashboard/";
 const CONFIG_PATH = "/api/store/admin/configuration/";
 
-const WEBSITE_STORAGE_KEY = "jalali_admin_website";
-
 // =========================================================
 // API HELPERS
 // =========================================================
@@ -230,6 +228,12 @@ function normalizeWebsite(value: string) {
       return "";
     }
 
+    if (!parsed.hostname) return "";
+
+    if (parsed.username || parsed.password) {
+      return "";
+    }
+
     return parsed.origin;
   } catch {
     return "";
@@ -244,7 +248,6 @@ export default function AdminPage() {
   const [step, setStep] = useState<Step>("website");
   const [website, setWebsite] = useState("");
 
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -266,6 +269,7 @@ export default function AdminPage() {
 
   const [configuration, setConfiguration] =
     useState<StoreConfiguration>({
+      site_url: "",
       seller_phone: "",
       seller_telegram: "",
     });
@@ -283,7 +287,7 @@ export default function AdminPage() {
     useState("");
 
   // -------------------------------------------------------
-  // RESTORE WEBSITE AND ADMIN SESSION
+  // RESTORE ADMIN SESSION
   // -------------------------------------------------------
 
   useEffect(() => {
@@ -291,18 +295,7 @@ export default function AdminPage() {
 
     async function restoreSession() {
       try {
-        const savedWebsite = localStorage.getItem(
-          WEBSITE_STORAGE_KEY
-        );
-
-        if (savedWebsite && active) {
-          setWebsite(savedWebsite);
-          setStep("login");
-        }
-
-        if (!API_BASE) {
-          return;
-        }
+        if (!API_BASE) return;
 
         const response = await fetch(
           `${API_BASE}${AUTH_PATH}/me/`,
@@ -325,6 +318,7 @@ export default function AdminPage() {
           data?.user
         ) {
           setAdmin(data.user as AdminUser);
+
           setSuccessMessage(
             "نشست مدیریتی قبلی بازیابی شد."
           );
@@ -335,7 +329,7 @@ export default function AdminPage() {
           ]);
         }
       } catch {
-        // نبود نشست فعال به معنی خطای غیرعادی نیست.
+        // نبود نشست فعال، مانع نمایش صفحه ورود نیست.
       } finally {
         if (active) {
           setSessionChecking(false);
@@ -475,16 +469,19 @@ export default function AdminPage() {
       }>(response);
 
       if (active) {
-        setConfiguration({
-          seller_phone:
-            data.data?.seller_phone || "",
-          seller_telegram:
-            data.data?.seller_telegram || "",
-          store_name:
-            data.data?.store_name || "",
-          slogan:
-            data.data?.slogan || "",
-        });
+        const savedConfiguration = {
+          site_url: data.data?.site_url || "",
+          seller_phone: data.data?.seller_phone || "",
+          seller_telegram: data.data?.seller_telegram || "",
+          store_name: data.data?.store_name || "",
+          slogan: data.data?.slogan || "",
+        };
+
+        setConfiguration(savedConfiguration);
+
+        if (savedConfiguration.site_url) {
+          setWebsite(savedConfiguration.site_url);
+        }
       }
     } catch (err) {
       if (active) {
@@ -531,13 +528,8 @@ export default function AdminPage() {
     }
 
     setError("");
+    setSuccessMessage("");
     setWebsite(normalized);
-
-    localStorage.setItem(
-      WEBSITE_STORAGE_KEY,
-      normalized
-    );
-
     setStep("login");
   }
 
@@ -546,6 +538,54 @@ export default function AdminPage() {
     setPassword("");
     setError("");
     setSuccessMessage("");
+  }
+
+  // -------------------------------------------------------
+  // SAVE WEBSITE URL
+  // -------------------------------------------------------
+
+  async function saveWebsiteAddress(
+    siteUrl: string
+  ) {
+    const csrfToken = await getCsrfToken();
+
+    const response = await fetch(
+      `${API_BASE}${CONFIG_PATH}`,
+      {
+        method: "PATCH",
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({
+          site_url: siteUrl,
+        }),
+      }
+    );
+
+    const data = await readResponse<{
+      success: boolean;
+      data?: StoreConfiguration;
+      message?: string;
+    }>(response);
+
+    if (!data.data?.site_url) {
+      throw new Error(
+        "سرور ذخیره آدرس سایت را تأیید نکرد."
+      );
+    }
+
+    setWebsite(data.data.site_url);
+
+    setConfiguration((previous) => ({
+      ...previous,
+      site_url: data.data?.site_url || siteUrl,
+    }));
+
+    return data.data.site_url;
   }
 
   // -------------------------------------------------------
@@ -562,15 +602,21 @@ export default function AdminPage() {
 
     if (!API_BASE) {
       setError(
-        "آدرس API بک‌اند تنظیم نشده است. متغیر NEXT_PUBLIC_API_BASE_URL را در تنظیمات محیطی فرانت‌اند ثبت کن."
+        "آدرس API بک‌اند تنظیم نشده است. متغیر NEXT_PUBLIC_API_BASE_URL را در تنظیمات فرانت‌اند ثبت کن."
       );
       return;
     }
 
-    if (!username.trim() || !password) {
-      setError(
-        "نام کاربری و رمز عبور را وارد کن."
-      );
+    if (!password) {
+      setError("پاسخ امنیتی را وارد کن.");
+      return;
+    }
+
+    const normalizedWebsite = normalizeWebsite(website);
+
+    if (!normalizedWebsite) {
+      setError("ابتدا آدرس معتبر سایت را وارد کن.");
+      setStep("website");
       return;
     }
 
@@ -591,7 +637,6 @@ export default function AdminPage() {
             "X-CSRFToken": csrfToken,
           },
           body: JSON.stringify({
-            username: username.trim(),
             password,
           }),
         }
@@ -612,11 +657,34 @@ export default function AdminPage() {
       setAdmin(loginData.user);
       setPassword("");
 
-      setSuccessMessage(
-        "ورود مدیر توسط سرور تأیید شد."
-      );
+      let websiteSaved = false;
+      let websiteSaveError = "";
+
+      try {
+        await saveWebsiteAddress(normalizedWebsite);
+        websiteSaved = true;
+      } catch (saveError) {
+        websiteSaveError =
+          saveError instanceof Error
+            ? saveError.message
+            : "ذخیره آدرس سایت ناموفق بود.";
+      }
 
       await loadAdminPanel();
+
+      if (websiteSaved) {
+        setSuccessMessage(
+          "ورود مدیر تأیید شد و آدرس سایت در دیتابیس ذخیره شد."
+        );
+      } else {
+        setSuccessMessage(
+          "ورود مدیر تأیید شد."
+        );
+
+        setConfigurationError(
+          `ذخیره آدرس سایت انجام نشد: ${websiteSaveError}`
+        );
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -750,7 +818,7 @@ export default function AdminPage() {
       setSuccessMessage("");
       setError("");
       setPassword("");
-      setStep("login");
+      setStep("website");
     } catch (err) {
       setError(
         err instanceof Error
@@ -960,10 +1028,13 @@ export default function AdminPage() {
                   </div>
 
                   <p className="text-[11px] leading-6 text-white/45">
-                    آدرس API بک‌اند باید جداگانه در متغیر
-                    NEXT_PUBLIC_API_BASE_URL تنظیم شده باشد.
-                    آدرس واردشده در این مرحله برای شناسایی
-                    سایت مورد مدیریت نگهداری می‌شود.
+                    ابتدا آدرس کامل سایت را وارد کن.
+                    برای نمونه:
+                    https://example.com
+                    آدرس API بک‌اند نیز باید جداگانه
+                    در متغیر NEXT_PUBLIC_API_BASE_URL
+                    تنظیم شده باشد. پس از ورود موفق،
+                    آدرس سایت در تنظیمات دیتابیس ذخیره می‌شود.
                   </p>
                 </div>
               </>
@@ -1031,33 +1102,23 @@ export default function AdminPage() {
                   onSubmit={submitLogin}
                   className="space-y-5"
                 >
-                  <div>
-                    <label className="mb-2 block text-sm text-white/70">
-                      نام کاربری مدیر
-                    </label>
+                  <div className="rounded-2xl border border-[#bd9568]/20 bg-[#bd9568]/[0.07] p-4">
+                    <div className="mb-2 flex items-center gap-2 text-[#e4bd8c]">
+                      <ShieldCheck size={19} />
 
-                    <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4">
-                      <UserRound
-                        size={19}
-                        className="text-[#c49a6c]"
-                      />
-
-                      <input
-                        value={username}
-                        onChange={(event) =>
-                          setUsername(event.target.value)
-                        }
-                        placeholder="نام کاربری"
-                        autoComplete="username"
-                        className="w-full bg-transparent py-4 text-sm outline-none"
-                        required
-                      />
+                      <span className="text-sm font-bold">
+                        پرسش امنیتی مدیر
+                      </span>
                     </div>
+
+                    <p className="text-sm leading-7 text-white/80">
+                      اسم و سازندهٔ سایت و برنامه‌ات چیست؟
+                    </p>
                   </div>
 
                   <div>
                     <label className="mb-2 block text-sm text-white/70">
-                      رمز عبور
+                      پاسخ امنیتی
                     </label>
 
                     <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4">
@@ -1076,8 +1137,8 @@ export default function AdminPage() {
                             ? "text"
                             : "password"
                         }
-                        placeholder="رمز عبور مدیر"
-                        autoComplete="current-password"
+                        placeholder="پاسخ اختصاصی مدیر"
+                        autoComplete="off"
                         className="w-full bg-transparent py-4 text-sm outline-none"
                         required
                       />
@@ -1088,7 +1149,7 @@ export default function AdminPage() {
                           setShowPassword(!showPassword)
                         }
                         className="text-white/40"
-                        aria-label="نمایش یا مخفی کردن رمز"
+                        aria-label="نمایش یا مخفی کردن پاسخ"
                       >
                         {showPassword ? (
                           <EyeOff size={19} />
@@ -1130,8 +1191,9 @@ export default function AdminPage() {
                   </div>
 
                   <p className="text-[11px] leading-6 text-white/50">
-                    نشست مدیریتی با کوکی سرور نگهداری می‌شود
-                    و رمز عبور در مرورگر ذخیره نمی‌شود.
+                    نشست مدیریتی با کوکی امن سرور نگهداری می‌شود.
+                    پاسخ امنیتی در مرورگر ذخیره نمی‌شود و
+                    بررسی آن در بک‌اند انجام می‌گیرد.
                   </p>
                 </div>
               </>
@@ -1554,8 +1616,7 @@ export default function AdminPage() {
                         onChange={(event) =>
                           setConfiguration({
                             ...configuration,
-                            seller_phone:
-                              event.target.value,
+                            seller_phone: event.target.value,
                           })
                         }
                         type="tel"
@@ -1582,8 +1643,7 @@ export default function AdminPage() {
                         onChange={(event) =>
                           setConfiguration({
                             ...configuration,
-                            seller_telegram:
-                              event.target.value,
+                            seller_telegram: event.target.value,
                           })
                         }
                         type="text"
