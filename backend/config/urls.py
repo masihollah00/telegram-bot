@@ -4,7 +4,12 @@ from django.http import JsonResponse
 from django.urls import include, path
 
 
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+
 def health_check(request):
+
     return JsonResponse({
         "success": True,
         "service": "JALALI API",
@@ -12,46 +17,61 @@ def health_check(request):
     })
 
 
+# =========================================================
+# ROOT URL CONFIGURATION
+# =========================================================
+
 urlpatterns = [
+
+    # Django administration
     path(
         "admin/",
         admin.site.urls,
     ),
 
-    # وضعیت و سلامت سرور
+    # API health
     path(
         "api/health/",
         health_check,
         name="health-check",
     ),
 
-    # API عمومی و تنظیمات مرکزی فروشگاه
+    # =====================================================
+    # PUBLIC STORE API
+    # =====================================================
+
+    # Core settings and store configuration
     path(
         "api/store/",
         include("apps.core.urls"),
     ),
 
-    # محصولات، دسته‌بندی‌ها و برندها
+    # Products, categories and brands
     path(
         "api/store/",
         include("apps.products.urls"),
     ),
 
-    # سفارش‌ها و پرداخت‌ها
+    # Orders and payments
     path(
         "api/store/",
         include("apps.orders.urls"),
     ),
 
-    # حساب مشتریان و همکاری عمده
+    # Customers and wholesale accounts
     path(
         "api/store/",
         include("apps.customers.urls"),
     ),
 
-    # مدیریت محصولات
+    # =====================================================
+    # ADMIN STORE API
+    # =====================================================
+
+    # Product management
     path(
         "api/admin/store/products/",
         include("apps.products.admin_urls"),
     ),
+
 ]
