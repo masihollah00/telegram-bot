@@ -1,8 +1,7 @@
-
 import os
 from datetime import date
 
-from django.conf import settings
+from django.conf import settings as django_settings
 from django.core.validators import MinLengthValidator
 from django.db import models
 
@@ -124,7 +123,7 @@ class StoreConfiguration(models.Model):
     )
 
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -205,7 +204,7 @@ class SiteTheme(models.Model):
     )
 
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -289,7 +288,7 @@ class SiteAsset(models.Model):
     )
 
     uploaded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -364,7 +363,7 @@ class SitePageSection(models.Model):
     )
 
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -452,7 +451,7 @@ class SiteNavigationLink(models.Model):
     )
 
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
